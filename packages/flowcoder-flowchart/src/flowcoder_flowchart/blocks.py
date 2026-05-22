@@ -65,6 +65,7 @@ class PromptBlock(BlockBase):
     prompt: str
     output_variable: str | None = None
     output_schema: dict[str, Any] | None = None
+    timeout_seconds: int = 21600
 
 
 class BranchBlock(BlockBase):

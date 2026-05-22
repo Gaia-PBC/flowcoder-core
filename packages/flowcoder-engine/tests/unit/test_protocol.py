@@ -89,6 +89,54 @@ class TestEmit:
         assert msg["is_error"] is False
         assert "uuid" in msg and len(msg["uuid"]) == 32
 
+    def test_emit_block_timeout(self):
+        p = ProtocolHandler()
+        captured = io.StringIO()
+        with patch.object(sys, "stdout", captured):
+            p.emit_block_timeout(
+                block_id="b1",
+                block_name="Slow",
+                block_type="prompt",
+                elapsed_ms=1234,
+                timeout_seconds=1,
+            )
+        msg = json.loads(captured.getvalue().strip())
+        assert msg["type"] == "system"
+        assert msg["subtype"] == "block_timeout"
+        assert msg["data"] == {
+            "block_id": "b1",
+            "block_name": "Slow",
+            "block_type": "prompt",
+            "elapsed_ms": 1234,
+            "timeout_seconds": 1,
+        }
+
+    def test_emit_block_complete_with_session_id(self):
+        p = ProtocolHandler()
+        captured = io.StringIO()
+        with patch.object(sys, "stdout", captured):
+            p.emit_block_complete("b1", "Slow", True, session_id="sess-abc")
+        msg = json.loads(captured.getvalue().strip())
+        assert msg["type"] == "system"
+        assert msg["subtype"] == "block_complete"
+        assert msg["data"]["block_id"] == "b1"
+        assert msg["data"]["block_name"] == "Slow"
+        assert msg["data"]["success"] is True
+        assert msg["data"]["session_id"] == "sess-abc"
+
+    def test_emit_block_complete_omits_session_id_when_none(self):
+        p = ProtocolHandler()
+        captured = io.StringIO()
+        with patch.object(sys, "stdout", captured):
+            p.emit_block_complete("b1", "Slow", True)
+        msg = json.loads(captured.getvalue().strip())
+        assert msg["data"] == {
+            "block_id": "b1",
+            "block_name": "Slow",
+            "success": True,
+        }
+        assert "session_id" not in msg["data"]
+
 
 class TestInboxQueue:
     @pytest.mark.asyncio
