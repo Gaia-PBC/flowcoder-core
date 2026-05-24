@@ -263,7 +263,10 @@ class GraphWalker:
                     self._log.append(entry)
 
                     self._protocol.emit_block_complete(
-                        current.id, current.name, result.success
+                        current.id,
+                        current.name,
+                        result.success,
+                        session_id=self._session.session_id,
                     )
 
                     if result.exit_code is not None:
@@ -360,9 +363,29 @@ class GraphWalker:
                     f"```json\n{schema_str}\n```"
                 )
 
-            result = await self._session.query(
-                prompt_text, block_id=block.id, block_name=block.name
-            )
+            start = time.monotonic()
+            try:
+                result = await asyncio.wait_for(
+                    self._session.query(
+                        prompt_text, block_id=block.id, block_name=block.name
+                    ),
+                    timeout=block.timeout_seconds,
+                )
+            except asyncio.TimeoutError:
+                elapsed_ms = int((time.monotonic() - start) * 1000)
+                # Kill the Claude subprocess so the session doesn't keep running.
+                await self._session.stop()
+                self._protocol.emit_block_timeout(
+                    block.id,
+                    block.name,
+                    block.type,
+                    elapsed_ms,
+                    block.timeout_seconds,
+                )
+                return BlockResult.fail(
+                    f"Block timed out after {elapsed_ms}ms "
+                    f"(limit: {block.timeout_seconds}s)"
+                )
 
             # Save raw output to variable if requested
             if block.output_variable and result.response_text:
