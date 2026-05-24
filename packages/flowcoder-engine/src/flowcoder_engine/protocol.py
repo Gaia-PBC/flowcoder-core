@@ -119,12 +119,45 @@ class ProtocolHandler:
         )
 
     def emit_block_complete(
-        self, block_id: str, block_name: str, success: bool
+        self,
+        block_id: str,
+        block_name: str,
+        success: bool,
+        session_id: str | None = None,
     ) -> None:
-        """Emit block_complete system message."""
+        """Emit block_complete system message.
+
+        ``session_id`` is included in the data payload only when non-null,
+        so consumers can update their stored session_id without overwriting
+        with a None before the first prompt block has run.
+        """
+        data: dict[str, Any] = {
+            "block_id": block_id,
+            "block_name": block_name,
+            "success": success,
+        }
+        if session_id is not None:
+            data["session_id"] = session_id
+        self.emit_system("block_complete", data)
+
+    def emit_block_timeout(
+        self,
+        block_id: str,
+        block_name: str,
+        block_type: str,
+        elapsed_ms: int,
+        timeout_seconds: int,
+    ) -> None:
+        """Emit block_timeout system message when a block exceeds its limit."""
         self.emit_system(
-            "block_complete",
-            {"block_id": block_id, "block_name": block_name, "success": success},
+            "block_timeout",
+            {
+                "block_id": block_id,
+                "block_name": block_name,
+                "block_type": block_type,
+                "elapsed_ms": elapsed_ms,
+                "timeout_seconds": timeout_seconds,
+            },
         )
 
     def emit_flowchart_start(
