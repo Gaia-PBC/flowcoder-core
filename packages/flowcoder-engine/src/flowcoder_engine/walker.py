@@ -32,6 +32,7 @@ from opentelemetry import trace
 
 from .json_parser import parse_json_from_response
 from .resolver import CommandNotFoundError, resolve_command
+from .subprocess import ReadInterruptedError, ReadTimeoutError
 from .templates import evaluate_template
 
 if TYPE_CHECKING:
@@ -751,9 +752,27 @@ class GraphWalker:
             self._protocol.log(f"Input block '{block.name}': received empty input")
             return BlockResult.ok(output="")
 
-        result = await self._session.query(
-            user_text, block_id=block.id, block_name=block.name
-        )
+        start = time.monotonic()
+        try:
+            result = await self._session.query(
+                user_text, block_id=block.id, block_name=block.name
+            )
+        except ReadTimeoutError:
+            # The inner CLI went silent after the input was delivered.  Report
+            # a failed block instead of letting the flowchart hang forever.
+            elapsed_ms = int((time.monotonic() - start) * 1000)
+            self._protocol.emit_block_timeout(
+                block.id, block.name, block.type, elapsed_ms, block.timeout_seconds
+            )
+            return BlockResult.fail(
+                f"Input block '{block.name}': agent stopped responding "
+                f"after {elapsed_ms}ms (CLI idle timeout)"
+            )
+        except ReadInterruptedError:
+            return BlockResult.fail(
+                f"Input block '{block.name}': interrupted while "
+                f"waiting for the agent"
+            )
 
         if block.output_variable and result.response_text:
             self._variables[block.output_variable] = result.response_text

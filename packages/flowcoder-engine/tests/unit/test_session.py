@@ -163,7 +163,7 @@ class TestStreamQuery:
         fake_process = AsyncMock()
         fake_process.write = AsyncMock()
         read_iter = iter(messages)
-        async def _read():
+        async def _read(timeout=None):
             try:
                 return next(read_iter)
             except StopIteration:
@@ -198,7 +198,7 @@ class TestStreamQuery:
         fake_process = AsyncMock()
         fake_process.write = AsyncMock()
         read_iter = iter(messages)
-        async def _read():
+        async def _read(timeout=None):
             try:
                 return next(read_iter)
             except StopIteration:
