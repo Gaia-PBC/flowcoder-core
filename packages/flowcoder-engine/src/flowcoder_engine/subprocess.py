@@ -59,9 +59,13 @@ class ClaudeProcess:
         self._interrupt: asyncio.Event = asyncio.Event()
 
     async def start(self, cmd: list[str], env: dict[str, str], cwd: str) -> None:
-        """Spawn the subprocess."""
-        # Clear any interrupt left over from a previous run, so a restarted
-        # process does not inherit a latched abort.
+        """Spawn the subprocess.
+
+        This is the ONLY place the interrupt latch is cleared — see
+        interrupt() for why it is otherwise terminal.  A newly spawned
+        process has a clean stdout stream, so inheriting a previous
+        run's abort would be wrong.
+        """
         self._interrupt.clear()
         self._proc = await asyncio.create_subprocess_exec(
             *cmd,
@@ -81,7 +85,23 @@ class ClaudeProcess:
         await self._proc.stdin.drain()
 
     def interrupt(self) -> None:
-        """Signal any in-flight read() to abort immediately."""
+        """Abort any in-flight read().  TERMINAL — this process is now done.
+
+        The interrupt latches: it is never auto-cleared, so every later
+        read() on this process raises ReadInterruptedError immediately.
+        That is deliberate, not an oversight.  Aborting a read mid-turn
+        leaves the CLI's stdout desynchronized — the inner CLI may still
+        emit the rest of that turn (assistant deltas, its terminal
+        'result'), and a subsequent query() would write a new prompt and
+        then consume those leftovers as if they answered it, corrupting
+        the response text and the cost accounting.  Latching makes that
+        unsafe reuse impossible instead of merely unlikely.
+
+        start() is the single defined reset point: it clears the latch
+        because a freshly spawned process has a clean stream.  Callers
+        that want a usable session after interrupting go through
+        ClaudeSession.clear()/stop()+start(), which spawn a new process.
+        """
         self._interrupt.set()
 
     async def read(

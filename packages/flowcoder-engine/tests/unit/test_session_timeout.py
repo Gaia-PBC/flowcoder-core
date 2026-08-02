@@ -191,7 +191,7 @@ class TestReadInterrupt:
             await asyncio.wait_for(cp.read(timeout=3600.0), timeout=OUTER_BOUND)
 
     async def test_restart_clears_a_latched_interrupt(self):
-        """A stale interrupt must not poison the next process."""
+        """start() is the defined reset point for the latch."""
         cp = _wedged_process()
         cp.interrupt()
         assert cp._interrupt.is_set()
@@ -200,6 +200,62 @@ class TestReadInterrupt:
         finally:
             assert not cp._interrupt.is_set()
             await cp.stop()
+
+    async def test_interrupt_is_terminal_for_the_process(self):
+        """DECISION: the interrupt latches; it is not a resettable pause.
+
+        Aborting a read mid-turn desynchronizes the CLI's stdout — the
+        remainder of that turn may still be in flight, and a later query
+        would consume it as if it answered the next prompt.  Every read
+        after an interrupt must therefore keep failing, until a fresh
+        process is spawned.  If this test ever fails, someone has made
+        interrupt() resettable and needs to solve the desync first.
+        """
+        cp = ClaudeProcess()
+        reader = asyncio.StreamReader()
+        cp._proc = FakeProc(reader)
+
+        cp.interrupt()
+
+        for attempt in range(3):
+            with pytest.raises(ReadInterruptedError):
+                await asyncio.wait_for(cp.read(timeout=1.0), timeout=OUTER_BOUND)
+
+        # Even with a perfectly good line waiting, the latch still refuses.
+        reader.feed_data(b'{"type": "result"}\n')
+        with pytest.raises(ReadInterruptedError):
+            await asyncio.wait_for(cp.read(timeout=1.0), timeout=OUTER_BOUND)
+
+    async def test_completed_line_wins_over_simultaneous_interrupt(self):
+        """Both tasks can land in `done`; the read must not be discarded.
+
+        asyncio.wait(FIRST_COMPLETED) may return more than one task when
+        readline() resolves and the interrupt fires before the waiter is
+        rescheduled.  readuntil() has already consumed those bytes from
+        the buffer, so raising instead of returning them loses the
+        message permanently.
+        """
+        reader = asyncio.StreamReader()
+        cp = ClaudeProcess()
+        cp._proc = FakeProc(reader)
+
+        # Prime a complete line, then fire the interrupt in the same tick
+        # the read resolves — both futures are ready when wait() returns.
+        reader.feed_data(b'{"type": "result", "n": 7}\n')
+
+        original = cp._proc.stdout.readline
+
+        async def readline_then_interrupt():
+            data = await original()
+            cp.interrupt()  # completes interrupt_task before wait() resumes
+            return data
+
+        cp._proc.stdout.readline = readline_then_interrupt  # type: ignore[assignment]
+
+        msg = await asyncio.wait_for(cp._read_line(1.0), timeout=OUTER_BOUND)
+        assert msg == b'{"type": "result", "n": 7}\n', (
+            "a fully-read line was discarded in favour of the interrupt"
+        )
 
 
 class TestQueryDoesNotHang:
