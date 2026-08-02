@@ -18,10 +18,23 @@ log = logging.getLogger(__name__)
 
 # Idle bound for a single read from the inner CLI's stdout: the maximum
 # time we wait for the NEXT byte, not the total time a query may take.
-# A healthy CLI emits stream events far more often than this, while a
-# wedged one emits nothing at all.  A total-elapsed cap would be wrong
-# here — a legitimate turn can run for many minutes.
-QUERY_READ_TIMEOUT = 120.0
+# A total-elapsed cap would be wrong here — a legitimate turn can run
+# for many minutes.
+#
+# Sized for false-positive safety rather than fast detection, because the
+# two errors are not symmetric.  The failure this guards against is a
+# wedged CLI, observed idling for ~2.5 hours; any bound in the minutes
+# range catches that effectively instantly, so a smaller value buys
+# almost nothing.  A bound that is too SMALL, though, halts a healthy
+# flowchart mid-turn, and this value is not reachable by consumers —
+# retuning it costs a flowcoder release and a dependency re-pin.
+#
+# The inner CLI runs without --include-partial-messages (see cli.py), so
+# it emits whole messages only.  The gap between an assistant message
+# carrying a tool_use and the following tool_result therefore spans the
+# entire tool execution, and any bound below the longest expected tool
+# call would fire on healthy traffic.
+QUERY_READ_TIMEOUT = 300.0
 
 
 class ReadTimeoutError(Exception):
