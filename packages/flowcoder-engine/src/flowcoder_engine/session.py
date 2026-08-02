@@ -20,7 +20,12 @@ log = logging.getLogger(__name__)
 
 from opentelemetry import trace
 
-from .subprocess import ClaudeProcess
+from .subprocess import (
+    QUERY_READ_TIMEOUT,
+    ClaudeProcess,
+    ReadInterruptedError,
+    ReadTimeoutError,
+)
 
 _tracer = trace.get_tracer(__name__)
 
@@ -159,6 +164,7 @@ class ClaudeSession(BaseSession):
         control_callback: ControlCallback | None = None,
         env_overrides: dict[str, str] | None = None,
         cwd: str | None = None,
+        read_timeout: float = QUERY_READ_TIMEOUT,
     ) -> None:
         self._name = name
         self._session_id: str | None = None
@@ -169,6 +175,7 @@ class ClaudeSession(BaseSession):
         self._control_callback = control_callback
         self._env_overrides = dict(env_overrides) if env_overrides else None
         self._cwd = cwd
+        self._read_timeout = read_timeout
         self._process: ClaudeProcess | None = None
         self._stderr_task: asyncio.Task[None] | None = None
 
@@ -195,6 +202,7 @@ class ClaudeSession(BaseSession):
             control_callback=self._control_callback,
             env_overrides=self._env_overrides,
             cwd=self._cwd,
+            read_timeout=self._read_timeout,
         )
 
     def with_model(self, model: str) -> ClaudeSession:
@@ -213,6 +221,7 @@ class ClaudeSession(BaseSession):
             control_callback=self._control_callback,
             env_overrides=self._env_overrides,
             cwd=self._cwd,
+            read_timeout=self._read_timeout,
         )
 
     async def set_permission_mode(self, mode: str) -> None:
@@ -230,7 +239,7 @@ class ClaudeSession(BaseSession):
         })
         # Read the control_response acknowledgement
         while True:
-            data = await self._process.read()
+            data = await self._process.read(timeout=self._read_timeout)
             if data is None:
                 break
             if data.get("type") == "control_response":
@@ -278,7 +287,27 @@ class ClaudeSession(BaseSession):
             result = QueryResult()
 
             while True:
-                data = await self._process.read()
+                try:
+                    data = await self._process.read(timeout=self._read_timeout)
+                except ReadTimeoutError:
+                    # A CLI that has gone silent past the idle bound is wedged
+                    # and will not recover.  Reap it here rather than leaving a
+                    # zombie process and three leaked pipes behind; the caller
+                    # sees is_running go False and can restart if it wants to.
+                    log.warning(
+                        "[%s] CLI idle for %ss during query — terminating "
+                        "wedged subprocess",
+                        self.name,
+                        self._read_timeout,
+                    )
+                    await self.stop()
+                    raise
+                except ReadInterruptedError:
+                    # Interrupt is a deliberate abort (e.g. /stop).  Whoever
+                    # asked for it owns the subprocess lifecycle, so leave the
+                    # process alone and just unwind.
+                    log.info("[%s] query interrupted", self.name)
+                    raise
                 if data is None:
                     break
 
@@ -377,7 +406,7 @@ class ClaudeSession(BaseSession):
             })
 
             while True:
-                data = await self._process.read()
+                data = await self._process.read(timeout=self._read_timeout)
                 if data is None:
                     return
 
@@ -462,6 +491,7 @@ class ClaudeSession(BaseSession):
                 pass
             self._stderr_task = None
         if self._process:
+            self._process.interrupt()
             await self._process.stop()
             self._process = None
 

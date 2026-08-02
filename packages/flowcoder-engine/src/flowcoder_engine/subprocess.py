@@ -16,6 +16,21 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
+# Idle bound for a single read from the inner CLI's stdout: the maximum
+# time we wait for the NEXT byte, not the total time a query may take.
+# A healthy CLI emits stream events far more often than this, while a
+# wedged one emits nothing at all.  A total-elapsed cap would be wrong
+# here — a legitimate turn can run for many minutes.
+QUERY_READ_TIMEOUT = 120.0
+
+
+class ReadTimeoutError(Exception):
+    """CLI subprocess produced no output within the idle timeout."""
+
+
+class ReadInterruptedError(Exception):
+    """CLI subprocess read was aborted by interrupt() (e.g. /stop)."""
+
 
 def find_claude() -> str:
     """Find the claude CLI binary on PATH.
@@ -41,9 +56,13 @@ class ClaudeProcess:
 
     def __init__(self) -> None:
         self._proc: asyncio.subprocess.Process | None = None
+        self._interrupt: asyncio.Event = asyncio.Event()
 
     async def start(self, cmd: list[str], env: dict[str, str], cwd: str) -> None:
         """Spawn the subprocess."""
+        # Clear any interrupt left over from a previous run, so a restarted
+        # process does not inherit a latched abort.
+        self._interrupt.clear()
         self._proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdin=PIPE,
@@ -61,15 +80,29 @@ class ClaudeProcess:
         self._proc.stdin.write((json.dumps(msg) + "\n").encode())
         await self._proc.stdin.drain()
 
-    async def read(self) -> dict[str, Any] | None:
+    def interrupt(self) -> None:
+        """Signal any in-flight read() to abort immediately."""
+        self._interrupt.set()
+
+    async def read(
+        self, timeout: float | None = QUERY_READ_TIMEOUT
+    ) -> dict[str, Any] | None:
         """Read one JSON message from stdout.
 
         Returns None on EOF (process exited).  Skips non-JSON lines.
+
+        *timeout* is an IDLE bound applied per underlying readline — the
+        limit on waiting for the next line, not on the total call.  It
+        defaults to QUERY_READ_TIMEOUT so an unbounded wait is never the
+        accidental default; pass timeout=None to opt out explicitly.
+
+        Raises ReadTimeoutError if no line arrives within *timeout*.
+        Raises ReadInterruptedError if interrupt() is called during the wait.
         """
         assert self._proc is not None
         assert self._proc.stdout is not None
         while True:
-            line_bytes = await self._proc.stdout.readline()
+            line_bytes = await self._read_line(timeout)
             if not line_bytes:
                 return None
             line = line_bytes.decode().strip()
@@ -79,6 +112,52 @@ class ClaudeProcess:
                 return json.loads(line)
             except json.JSONDecodeError:
                 continue
+
+    async def _read_line(self, timeout: float | None) -> bytes:
+        """Read one raw line from stdout, racing readline against interrupt.
+
+        Partial-line safety: when the readline task is cancelled (timeout or
+        interrupt), bytes already consumed stay in the StreamReader's internal
+        buffer — asyncio only drains that buffer once a full separator is
+        found.  A resumed read therefore returns the complete line rather
+        than a truncated one, so no partial JSON is ever surfaced.
+        """
+        assert self._proc is not None
+        assert self._proc.stdout is not None
+
+        if self._interrupt.is_set():
+            raise ReadInterruptedError("CLI read interrupted")
+
+        read_task = asyncio.ensure_future(self._proc.stdout.readline())
+        interrupt_task = asyncio.ensure_future(self._interrupt.wait())
+
+        try:
+            done, pending = await asyncio.wait(
+                {read_task, interrupt_task},
+                timeout=timeout,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+        except BaseException:
+            # Cancellation of the awaiting coroutine must not orphan the tasks.
+            read_task.cancel()
+            interrupt_task.cancel()
+            raise
+
+        # A line that already arrived wins over a simultaneous interrupt —
+        # discarding it here would silently drop a complete CLI message.
+        if read_task in done and not read_task.cancelled():
+            interrupt_task.cancel()
+            return read_task.result()
+
+        for t in pending:
+            t.cancel()
+
+        if interrupt_task in done:
+            raise ReadInterruptedError("CLI read interrupted")
+
+        raise ReadTimeoutError(
+            f"No output from CLI subprocess for {timeout}s (idle timeout)"
+        )
 
     async def read_stderr(self) -> str | None:
         """Read one line from stderr. Returns None on EOF."""
