@@ -29,11 +29,13 @@ log = logging.getLogger(__name__)
 # flowchart mid-turn, and this value is not reachable by consumers —
 # retuning it costs a flowcoder release and a dependency re-pin.
 #
-# The inner CLI runs without --include-partial-messages (see cli.py), so
-# it emits whole messages only.  The gap between an assistant message
-# carrying a tool_use and the following tool_result therefore spans the
-# entire tool execution, and any bound below the longest expected tool
-# call would fire on healthy traffic.
+# Measured, not assumed: driving a real CLI through a 90s `sleep` tool
+# call produced 27 stdout messages with a maximum inter-message gap of
+# 2.9s — it keeps streaming while a tool runs, even without
+# --include-partial-messages.  So healthy traffic stays far below this
+# bound, and the generous value costs nothing in practice.  Re-measure
+# before assuming a tighter bound is unsafe; the earlier worry that a
+# tool call implies an equally long stdout silence proved false.
 QUERY_READ_TIMEOUT = 300.0
 
 
