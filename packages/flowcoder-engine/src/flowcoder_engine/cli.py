@@ -107,11 +107,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         dest="allowed_tools",
         help="Comma-separated list of tools to allow",
     )
+    # Accepted but inert: the inner CLI is always run with --verbose,
+    # because -p plus --output-format stream-json requires it (see
+    # build_inner_claude_cmd).  The flag is kept so that a host passing
+    # --verbose has it absorbed here rather than duplicated through
+    # passthrough, and so existing callers keep working.
     parser.add_argument(
         "--verbose", "-v",
         action="store_true",
         default=False,
-        help="Enable verbose output from inner Claude",
+        help="Accepted for compatibility; the inner Claude CLI is always "
+             "run with --verbose, which the stream-json protocol requires",
     )
 
     args, remaining = parser.parse_known_args(argv)
@@ -130,15 +136,27 @@ def build_inner_claude_cmd(args: argparse.Namespace, claude_path: str) -> list[s
     2. Engine-owned Claude settings (--model, --permission-mode, etc.)
     3. Defaults (stream-json I/O, -p mode)
     """
+    # --verbose is NOT optional here, despite the flag of the same name.
+    # Claude CLI rejects `-p` combined with `--output-format stream-json`
+    # unless --verbose is also present, exiting immediately with
+    #   "When using --print, --output-format=stream-json requires --verbose"
+    # An inner CLI that exits at once gives EOF on stdout, so read() returns
+    # None and every query comes back empty — a silent wrong answer rather
+    # than a crash. Since -p and stream-json are hardcoded above, the
+    # requirement always applies, so this is emitted unconditionally.
+    #
+    # Do NOT re-gate this on args.verbose or move it behind a condition.
+    # Hosts that pass their own --verbose have it consumed by our parser
+    # (it never reaches passthrough), so they depend on this line to put it
+    # back; re-gating breaks them silently with the instant-exit signature
+    # above and no test catches it downstream.
     cmd = [
         claude_path,
         "-p",
         "--input-format", "stream-json",
         "--output-format", "stream-json",
+        "--verbose",
     ]
-
-    if args.verbose:
-        cmd.append("--verbose")
 
     if args.model:
         cmd.extend(["--model", args.model])
