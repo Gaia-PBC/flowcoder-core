@@ -29,6 +29,7 @@ from flowcoder_flowchart import (
 )
 from flowcoder_engine.walker import GraphWalker
 from flowcoder_engine.session import Session
+from flowcoder_engine.cli import build_inner_claude_cmd, parse_args
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent / "packages" / "flowcoder-engine" / "tests"))
@@ -436,6 +437,22 @@ class TestSpawnWaitClaude:
 
     CLAUDE_PATH = str(Path.home() / ".local" / "bin" / "claude")
 
+    @classmethod
+    def build_claude_cmd(cls, *extra: str) -> list[str]:
+        """Build an inner-CLI command the same way the engine does.
+
+        Session takes claude_cmd verbatim — session.py copies the list and
+        subprocess.py execs it, with nothing prepended — so a command that
+        omits the protocol flags launches an interactive CLI that never
+        writes stream-json.  The session then receives nothing at all and
+        the run halts once the read bound fires.
+
+        Delegating to the engine's own builder rather than restating the
+        flags keeps these tests from drifting: if the engine changes how it
+        launches the CLI, they follow automatically.
+        """
+        return build_inner_claude_cmd(parse_args(list(extra)), cls.CLAUDE_PATH)
+
     @pytest.fixture
     def has_claude(self):
         """Skip if claude CLI is not installed."""
@@ -492,11 +509,10 @@ class TestSpawnWaitClaude:
         # Create a real session
         session = Session(
             name="test",
-            claude_cmd=[
-                self.CLAUDE_PATH,
+            claude_cmd=self.build_claude_cmd(
                 "--model", "claude-haiku-4-5-20251001",
                 "--max-turns", "1",
-            ],
+            ),
             protocol=MockProtocol(),
         )
 
@@ -565,11 +581,10 @@ class TestSpawnWaitClaude:
         # The key is that a *separate* Session is created for the spawned agent
         session = Session(
             name="test-parent",
-            claude_cmd=[
-                self.CLAUDE_PATH,
+            claude_cmd=self.build_claude_cmd(
                 "--model", "claude-haiku-4-5-20251001",
                 "--max-turns", "1",
-            ],
+            ),
             protocol=MockProtocol(),
         )
 
