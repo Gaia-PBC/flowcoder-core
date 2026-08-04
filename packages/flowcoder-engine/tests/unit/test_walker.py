@@ -7,6 +7,7 @@ from flowcoder_flowchart import (
     Connection,
     EndBlock,
     Flowchart,
+    PromptBlock,
     StartBlock,
     VariableBlock,
     VariableType,
@@ -332,3 +333,117 @@ class TestProtocolMessages:
         walker = GraphWalker(simple_flowchart, mock_session, {"$1": "X"}, mock_protocol)
         await walker.run()
         assert any("Executing block" in log for log in mock_protocol.logs)
+
+
+def _timeout_flowchart(timeout_seconds: int) -> Flowchart:
+    """start -> prompt(timeout_seconds=…) -> end"""
+    return Flowchart(
+        blocks={
+            "s": StartBlock(id="s", name="Start"),
+            "p": PromptBlock(
+                id="p",
+                name="Slow",
+                prompt="Anything",
+                timeout_seconds=timeout_seconds,
+            ),
+            "e": EndBlock(id="e", name="End"),
+        },
+        connections=[
+            Connection(source_id="s", target_id="p"),
+            Connection(source_id="p", target_id="e"),
+        ],
+    )
+
+
+class TestBlockTimeout:
+    def test_default_timeout_value(self):
+        """PromptBlock defaults to 6h (21600s) when not specified."""
+        block = PromptBlock(id="p", name="x", prompt="hi")
+        assert block.timeout_seconds == 21600
+
+    def test_timeout_from_json(self):
+        """An override on PromptBlock round-trips through Pydantic."""
+        block = PromptBlock.model_validate({
+            "id": "p",
+            "name": "x",
+            "prompt": "hi",
+            "timeout_seconds": 30,
+        })
+        assert block.timeout_seconds == 30
+        # And a dump preserves it
+        assert block.model_dump()["timeout_seconds"] == 30
+
+    async def test_timeout_fires_with_hanging_session(self, mock_protocol):
+        session = MockSession(delay_seconds=60)
+        fc = _timeout_flowchart(timeout_seconds=1)
+        walker = GraphWalker(fc, session, {}, mock_protocol)
+        result = await walker.run()
+        assert result.status == "halted"
+        # Session.stop() should have been called to kill the hung subprocess
+        assert session._stop_count >= 1
+
+    async def test_block_timeout_event_emitted(self, mock_protocol):
+        session = MockSession(delay_seconds=60)
+        fc = _timeout_flowchart(timeout_seconds=1)
+        walker = GraphWalker(fc, session, {}, mock_protocol)
+        await walker.run()
+
+        timeouts = [
+            m for m in mock_protocol.messages
+            if m.get("subtype") == "block_timeout"
+        ]
+        assert len(timeouts) == 1
+        data = timeouts[0]["data"]
+        assert data["block_id"] == "p"
+        assert data["block_name"] == "Slow"
+        assert data["block_type"] == "prompt"
+        assert isinstance(data["elapsed_ms"], int)
+        assert data["elapsed_ms"] >= 0
+        assert isinstance(data["timeout_seconds"], int)
+        assert data["timeout_seconds"] == 1
+
+    async def test_block_complete_carries_session_id(self, mock_protocol):
+        """After a prompt block, subsequent block_completes carry the session_id."""
+        session = MockSession(session_id="sess-abc-123")
+        fc = _timeout_flowchart(timeout_seconds=10)
+        walker = GraphWalker(fc, session, {}, mock_protocol)
+        result = await walker.run()
+        assert result.status == "completed"
+
+        block_completes = [
+            m for m in mock_protocol.messages
+            if m.get("subtype") == "block_complete"
+        ]
+        # MockSession exposes its session_id from the start (mock), so every
+        # block_complete carries the id field.
+        assert len(block_completes) == 3  # start, prompt, end
+        for msg in block_completes:
+            assert msg["data"].get("session_id") == "sess-abc-123"
+
+    async def test_no_timeout_under_limit(self, mock_protocol):
+        """A fast prompt under its limit completes normally."""
+        session = MockSession(delay_seconds=0)
+        fc = _timeout_flowchart(timeout_seconds=10)
+        walker = GraphWalker(fc, session, {}, mock_protocol)
+        result = await walker.run()
+        assert result.status == "completed"
+        # No timeout events fired
+        assert not any(
+            m.get("subtype") == "block_timeout"
+            for m in mock_protocol.messages
+        )
+        # session.stop() was not called by the walker (no timeout)
+        assert session._stop_count == 0
+
+    async def test_block_complete_session_id_omitted_when_none(self, mock_protocol):
+        """If the session has no id yet, block_complete should not carry session_id."""
+        session = MockSession(session_id=None)
+        fc = _timeout_flowchart(timeout_seconds=10)
+        walker = GraphWalker(fc, session, {}, mock_protocol)
+        await walker.run()
+        block_completes = [
+            m for m in mock_protocol.messages
+            if m.get("subtype") == "block_complete"
+        ]
+        for msg in block_completes:
+            assert "session_id" not in msg["data"]

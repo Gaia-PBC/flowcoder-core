@@ -69,6 +69,21 @@ class ProtocolHandler:
         """Push a message directly into the inbox queue."""
         self._inbox.put_nowait(msg)
 
+    def drain_inbox(self) -> list[dict[str, Any]]:
+        """Remove and return every message currently queued in the inbox.
+
+        Used to hand back messages that were routed into the inbox but never
+        consumed (e.g. when a flowchart takeover ends), so no client message is
+        silently dropped.
+        """
+        drained: list[dict[str, Any]] = []
+        while True:
+            try:
+                drained.append(self._inbox.get_nowait())
+            except asyncio.QueueEmpty:
+                break
+        return drained
+
     async def forward_control_request(
         self, inner_request: dict[str, Any]
     ) -> dict[str, Any]:
@@ -119,12 +134,45 @@ class ProtocolHandler:
         )
 
     def emit_block_complete(
-        self, block_id: str, block_name: str, success: bool
+        self,
+        block_id: str,
+        block_name: str,
+        success: bool,
+        session_id: str | None = None,
     ) -> None:
-        """Emit block_complete system message."""
+        """Emit block_complete system message.
+
+        ``session_id`` is included in the data payload only when non-null,
+        so consumers can update their stored session_id without overwriting
+        with a None before the first prompt block has run.
+        """
+        data: dict[str, Any] = {
+            "block_id": block_id,
+            "block_name": block_name,
+            "success": success,
+        }
+        if session_id is not None:
+            data["session_id"] = session_id
+        self.emit_system("block_complete", data)
+
+    def emit_block_timeout(
+        self,
+        block_id: str,
+        block_name: str,
+        block_type: str,
+        elapsed_ms: int,
+        timeout_seconds: int,
+    ) -> None:
+        """Emit block_timeout system message when a block exceeds its limit."""
         self.emit_system(
-            "block_complete",
-            {"block_id": block_id, "block_name": block_name, "success": success},
+            "block_timeout",
+            {
+                "block_id": block_id,
+                "block_name": block_name,
+                "block_type": block_type,
+                "elapsed_ms": elapsed_ms,
+                "timeout_seconds": timeout_seconds,
+            },
         )
 
     def emit_flowchart_start(

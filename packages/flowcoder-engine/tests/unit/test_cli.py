@@ -1,8 +1,51 @@
 """Tests for CLI argument parsing."""
 
 import pytest
-from flowcoder_engine.cli import build_variables, parse_args
+from flowcoder_engine.cli import build_inner_claude_cmd, build_variables, parse_args
 from flowcoder_flowchart import Argument
+
+
+class TestInnerClaudeCmd:
+    """The inner CLI must be launchable, not merely well-formed.
+
+    Claude CLI refuses `-p` with `--output-format stream-json` unless
+    --verbose is present, exiting immediately.  That produces EOF on
+    stdout, so read() returns None and queries come back empty — a
+    silent wrong answer, which is why these assertions are explicit
+    rather than left to an integration test to notice.
+    """
+
+    def test_verbose_present_without_the_flag(self):
+        """The bug: a host that never passes --verbose still needs it."""
+        cmd = build_inner_claude_cmd(parse_args([]), "/usr/bin/claude")
+        assert "--verbose" in cmd, (
+            "inner CLI would exit immediately: -p with "
+            "--output-format stream-json requires --verbose"
+        )
+
+    def test_verbose_present_with_the_flag(self):
+        cmd = build_inner_claude_cmd(parse_args(["--verbose"]), "/usr/bin/claude")
+        assert "--verbose" in cmd
+
+    def test_verbose_not_duplicated_when_host_passes_it(self):
+        """Our parser absorbs --verbose so it cannot arrive twice."""
+        cmd = build_inner_claude_cmd(parse_args(["--verbose"]), "/usr/bin/claude")
+        assert cmd.count("--verbose") == 1
+
+    def test_protocol_trio_always_present(self):
+        """--verbose is only required because of these two; pin all three."""
+        cmd = build_inner_claude_cmd(parse_args([]), "/usr/bin/claude")
+        assert "-p" in cmd
+        assert cmd[cmd.index("--output-format") + 1] == "stream-json"
+        assert cmd[cmd.index("--input-format") + 1] == "stream-json"
+
+    def test_survives_passthrough_from_a_host(self):
+        """A host forwarding raw flags must still get a launchable command."""
+        cmd = build_inner_claude_cmd(
+            parse_args(["--", "--include-partial-messages"]), "/usr/bin/claude"
+        )
+        assert "--verbose" in cmd
+        assert "--include-partial-messages" in cmd
 
 
 class TestParseArgs:

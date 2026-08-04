@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-from flowcoder_engine.session import ClaudeSession as Session, _clean_env
+from flowcoder_engine.session import ClaudeSession as Session, _clean_env, _strip_continuity_flags
 from tests.conftest import MockProtocol
 
 
@@ -163,7 +163,7 @@ class TestStreamQuery:
         fake_process = AsyncMock()
         fake_process.write = AsyncMock()
         read_iter = iter(messages)
-        async def _read():
+        async def _read(timeout=None):
             try:
                 return next(read_iter)
             except StopIteration:
@@ -198,7 +198,7 @@ class TestStreamQuery:
         fake_process = AsyncMock()
         fake_process.write = AsyncMock()
         read_iter = iter(messages)
-        async def _read():
+        async def _read(timeout=None):
             try:
                 return next(read_iter)
             except StopIteration:
@@ -263,3 +263,52 @@ class TestStderrForwarding:
         # Should complete without error (logs to debug instead of protocol)
         await asyncio.wait_for(session._stderr_task, timeout=5.0)
         await cp.stop()
+
+
+class TestRefreshStripsContinuityFlags:
+    """A refresh (clear()) must not respawn with --resume/--continue, or the
+    'cleared' session reloads the prior conversation (the flowcoder refresh bug).
+    """
+
+    def test_strip_removes_resume_and_value(self):
+        assert _strip_continuity_flags(
+            ["claude", "-p", "--model", "haiku", "--resume", "abc123"]
+        ) == ["claude", "-p", "--model", "haiku"]
+
+    def test_strip_removes_continue_and_session_id(self):
+        assert _strip_continuity_flags(
+            ["claude", "--continue", "--session-id", "sid-1", "-p"]
+        ) == ["claude", "-p"]
+
+    def test_strip_bare_resume_without_value(self):
+        # --resume immediately followed by another flag: drop only the flag.
+        assert _strip_continuity_flags(
+            ["claude", "--resume", "--model", "haiku"]
+        ) == ["claude", "--model", "haiku"]
+
+    def test_strip_is_noop_without_continuity_flags(self):
+        cmd = ["claude", "-p", "--model", "haiku"]
+        assert _strip_continuity_flags(cmd) == cmd
+
+    async def test_clear_drops_resume_from_respawn_cmd(self):
+        # Regression guard for the refresh bug: after clear(), the session must
+        # NOT respawn with --resume (which would reload the prior conversation).
+        session = Session("t", ["claude", "-p", "--model", "haiku", "--resume", "abc123"])
+        session._session_id = "abc123"
+        restarts: list[bool] = []
+
+        async def fake_stop() -> None:
+            pass
+
+        async def fake_start() -> None:
+            restarts.append(True)
+
+        session.stop = fake_stop  # type: ignore[method-assign]
+        session.start = fake_start  # type: ignore[method-assign]
+
+        await session.clear()
+
+        assert "--resume" not in session._claude_cmd
+        assert "abc123" not in session._claude_cmd
+        assert session._session_id is None
+        assert restarts == [True]  # it did restart, just without --resume

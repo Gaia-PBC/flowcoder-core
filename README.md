@@ -1,185 +1,147 @@
-# FlowCoder
+# FlowCoder Engine
 
-[![Watch the demo](https://img.youtube.com/vi/1COOR6UmpsY/maxresdefault.jpg)](https://www.youtube.com/watch?v=1COOR6UmpsY)
+Execute flowchart-defined workflows against Claude Code.
 
-Create and execute custom automated workflows for Claude Code, via a visual flowchart builder. OpenAI models (e.g. GPT-5) are supported through [anthropic-proxy-rs](https://github.com/maxnowack/anthropic-proxy) — see "Codex / GPT models" below.
+The engine is a transparent proxy around the `claude` CLI: it behaves
+identically to `claude -p --input-format stream-json --output-format
+stream-json`, forwarding stdin and stdout to an inner Claude process. When a
+user message contains a slash command matching a known flowchart, the engine
+takes over, runs the flowchart, emits structured events, then resumes proxying.
 
-![Flowchart Example](./images/flowchart-example.png)
+The tkinter GUI that used to live here now has its own repo:
+[px-pride/flowcoder-tk-gui](https://github.com/px-pride/flowcoder-tk-gui).
+
+## Packages
+
+| Package | Purpose |
+|---|---|
+| `packages/flowcoder-flowchart` | Pure pydantic data models — blocks, connections, commands. No I/O. |
+| `packages/flowcoder-engine` | Execution engine, CLI proxy, stream-json protocol, graph walker. |
+
+`flowcoder-engine` depends on `flowcoder-flowchart`. Nothing depends on the GUI.
 
 ## Requirements
 
 - Python 3.12+
 - [uv](https://docs.astral.sh/uv/)
-- Node.js 18+
+- The `claude` CLI on `PATH` (or pass `--claude-path`)
 
-## Install & Run
+## Install
 
 ```bash
-uv sync
-npm install
-uv run python -m src.main
+uv sync --extra dev
 ```
 
-## Quickstart
+The repo root is not itself an installable package — it pins the two packages
+as editable local sources and hosts the cross-package tests in `tests/`.
 
-This repo contains a number of example flowcharts to help users understand the system. It is recommended you understand how they work by reviewing them in the Commands tab later, but right now let's try using them.
+To depend on the engine from another project:
 
-1. Go to the Sessions tab, click New Session, enter the name notepad-clone, and choose a fresh working directory. Hit Create Session.
+```toml
+[tool.uv.sources]
+flowcoder-engine = { git = "https://github.com/px-pride/flowcoder.git", subdirectory = "packages/flowcoder-engine" }
+flowcoder-flowchart = { git = "https://github.com/px-pride/flowcoder.git", subdirectory = "packages/flowcoder-flowchart" }
+```
 
-2. In the Chat pane, under where it says "Input:", type `/ex0-design-doc "Make a plain text editor Electron app. It should have all the features that Notepad on Windows 10 has."` and hit enter. This is a very simple flowchart that prompts the agent to make a design doc for the given task, using argument substitution to fill in the prompt. (You can replace the plain text editor task with any other task of your choosing, it's just an example.)
+Pin a `rev` for reproducible builds.
 
-3. The flowchart for that slash command will begin executing. When it finishes, you'll see "Execution completed: ex0-design-do" in the Output section.
+## Usage
 
-4. Next, try `/ex1-do-until-done DESIGN_DOC.md`. This flowchart repeatedly prompts the agent to fully implement the specified design document until the agent is finished. Then the flowchart resets the agent's context, and prompts it to audit the implementation, further looping if the audit uncovers issues.
+```bash
+uv run flowcoder-engine [options]
+```
 
-5. Note that the next couple examples are more time-consuming, as they involve flowcharts built for longer autonomous behavior. Try `/ex2-testing-loop DESIGN_DOC.md`. This is the flowchart from the preceding image: it writes a test suite that fits the design document, then loops between running tests via bash and prompting the agent to diagnose/fix test failures.
+Run `uv run flowcoder-engine --help` for the full list. Commonly used:
 
-6. The final example is `/ex3-improve-project [N]` (replace `[N]` with any number, e.g. `/ex3-improve-project 2`). This example demonstrates for-loop behavior in a flowchart. The flowchart performs N iterations; in each iteration, the flowchart prompts the agent to design a new major feature for the codebase, then runs `/ex1` and `/ex2` for the new feature.
+| Flag | Purpose |
+|---|---|
+| `--claude-path` | Path to the `claude` binary (auto-detected if omitted) |
+| `--search-path` | Extra directory to resolve flowchart commands from (repeatable) |
+| `--max-blocks` | Safety limit on blocks executed per flowchart |
+| `--model` | Model for the inner Claude process (e.g. `sonnet`, `opus`, `haiku`) |
+| `--permission-mode` | `default`, `plan`, or `bypassPermissions` |
+| `--cwd` | Working directory for the inner Claude process |
+| `--resume` | Resume a previous Claude session by ID |
 
-You can also run `/all-examples` to see all four examples executed sequentially.
+## Command resolution
 
-## Creating Commands
+A slash command `/name` resolves to `name.json`, searched in this order
+(`resolver.py`):
 
-Commands are reusable workflows built from connected blocks in a flowchart. To create a command:
+1. `./commands/name.json`, then `./name.json`
+2. For each `--search-path` *P*: `P/name.json`, then `P/commands/name.json`
+3. `~/.flowcoder/commands/name.json`
 
-1. Click **New Command** in the Commands tab
-2. Give your command a name (alphanumeric, hyphens, and underscores only)
-3. Drag blocks from the **Block Palette** onto the canvas
-4. Connect blocks by dragging from one block's output port to another's input port (branching special case below)
-5. Configure each block by clicking on it and editing its properties
+First match wins; `CommandNotFoundError` if none.
 
-### Block Types
+## Flowchart format
+
+A command is a JSON document of blocks and the connections between them.
+
+### Block types
 
 | Block | Purpose |
-|-------|---------|
-| **Start** | Entry point (required) |
-| **Prompt** | Send a prompt to Claude and capture structured output |
-| **Bash** | Execute shell commands |
-| **Variable** | Set a variable to a value |
-| **Branch** | Conditional branching based on variable values |
-| **Command** | Invoke another command |
-| **Refresh** | Restart the Claude session |
-| **Cast** | Convert variable types |
-| **End** | Exit point |
+|---|---|
+| `start` | Entry point (required) |
+| `end` | Exit point |
+| `prompt` | Send a prompt to Claude, capture structured output |
+| `bash` | Execute a shell command |
+| `variable` | Set a variable, with type coercion |
+| `branch` | Conditional branching on a variable |
+| `command` | Invoke another command |
+| `refresh` | Restart the Claude session |
+| `spawn` | Start a named background agent |
+| `wait` | Block until spawned agents finish |
+| `exit` | Terminate the flowchart early |
+| `input` | Request input mid-run |
 
-### Branch Blocks
+Variable types: `string`, `number`, `boolean`, `json` (`int` and `float` are
+accepted as aliases for `number`).
 
-Branch blocks evaluate a condition and follow either the **True path** (black arrow) or **False path** (blue arrow).
+### Branch conditions
 
-**Creating connections:**
-- **True path**: Drag from a port to create a black arrow
-- **False path**: Ctrl+Drag from a port to create a blue arrow
+Templates are substituted before the condition is evaluated. If both sides
+parse as numbers the comparison is numeric, otherwise it is a string compare.
 
-**Condition syntax:**
+| Form | Example |
+|---|---|
+| `field` (truthy) | `isComplete` |
+| `!field` (negated) | `!hasErrors` |
+| `field == value` | `status == "done"` |
+| `field != value` | `count != 0` |
+| `field > value` | `score > 80` |
+| `field < value` | `attempts < 3` |
+| `field >= value` | `progress >= 100` |
+| `field <= value` | `errors <= 5` |
 
-| Format | Example | Description |
-|--------|---------|-------------|
-| `field == value` | `status == "done"` | Equality check |
-| `field != value` | `count != 0` | Inequality check |
-| `field > value` | `score > 80` | Greater than |
-| `field < value` | `attempts < 3` | Less than |
-| `field >= value` | `progress >= 100` | Greater than or equal |
-| `field <= value` | `errors <= 5` | Less than or equal |
-| `field` | `isComplete` | Boolean field (truthy check) |
-| `!field` | `!hasErrors` | Negated boolean field |
+### Variable substitution
 
-### Variable Substitution
+- `$1`, `$2`, … — positional arguments passed to the command
+- `{{variable_name}}` — variables set by earlier blocks
 
-Blocks can reference variables from previous blocks:
-- `$1`, `$2`, etc. - Positional arguments passed to the command
-- `{{variable_name}}` - Variables set by previous blocks
+## Example commands
 
-## Sessions
+`commands/` holds runnable examples:
 
-Sessions are isolated execution environments with their own working directory and Claude instance.
-(Multiple sessions at once is currently disabled due to an architectural issue leading to memory leaks.)
+| Command | Behaviour |
+|---|---|
+| `/ex0-design-doc "<task>"` | Write a design doc for the given task |
+| `/ex1-do-until-done <doc>` | Implement a design doc, then audit and loop |
+| `/ex2-testing-loop <doc>` | Write a test suite, then loop fixing failures |
+| `/ex3-improve-project <N>` | N rounds of designing and building a feature |
+| `/all-examples` | Run the four above in sequence |
 
-### Creating a Session
+## Tests
 
-1. Go to the **Agents** tab
-2. Click **New Session**
-3. Enter a session name and working directory
-4. Optionally configure git remote settings
-
-### How Sessions Work
-
-- Each session has its own working directory where Bash blocks execute
-- Sessions maintain separate chat and execution history
-- Commands run in the context of the active session
-- Session data persists to `~/.flowcoder/sessions.json`
-
-### Executing Commands
-
-1. Select a session to make it active
-2. Go to the **Commands** tab
-3. Select a command and click **Run** (or use the play button)
-4. Watch execution progress in the flowchart canvas
-5. View results in the chat panel
-
-### Codex / GPT models (via proxy)
-
-When creating a session you can pick "Codex" instead of "Claude Code". Under
-the hood this still spawns the `claude` binary, but with `ANTHROPIC_BASE_URL`
-and `ANTHROPIC_MODEL` set so requests are routed through
-[anthropic-proxy-rs](https://github.com/maxnowack/anthropic-proxy), which
-translates them to the OpenAI Chat Completions API.
-
-To use this:
-
-1. Install and run the proxy on `http://127.0.0.1:3000` (default — see the
-   proxy's README for setup and OpenAI key configuration).
-2. Pick a config like `codex-max` or `codex-min` when creating the session.
-3. The "Codex" backend is otherwise identical to the "Claude Code" one — same
-   flowcharts, same blocks, same tools.
-
-The proxy is external; FlowCoder does not start or manage its lifecycle.
-
-## Git Integration
-
-FlowCoder initializes a git repository in each session's working directory and automatically commits changes after each Prompt or Bash block finishes executing. Commits are labeled with the block type and name.
-
-Sessions can optionally be configured with:
-- **Git Remote URL**: Configures an `origin` remote for the repository
-- **Branch**: Checks out (or creates) a specific branch
-- **Auto Push**: Automatically pushes to the remote after each commit
-
-## Agents Tab Buttons
-
-| Button | Description |
-|--------|-------------|
-| **⏸ Halt** | Pauses execution after the current block finishes. The session enters a halted state and can be resumed later |
-| **▶ Resume** | Continues execution from where it was halted |
-| **⏹ Stop** | Stops execution after the current block finishes, then terminates the agent process |
-| **⏹ Force Stop** | Immediately terminates the agent without waiting for the current block to finish. Use with caution as this may leave work incomplete |
-| **🔄 Refresh** | Stops the agent and starts a fresh instance. Useful for resetting the agent's state |
-
-## Troubleshooting
-
-### App crashes with `UnknownLocaleError: unknown locale 'c'`
-
-This occurs on systems where the locale is set to `C` (common in minimal Linux environments, WSL, or Docker). 
-
-**Quick fix:**
 ```bash
-LANG=en_US.UTF-8 uv run python -m src.main
+uv run pytest packages/flowcoder-engine/tests/unit   # engine unit tests
+uv run pytest packages/flowcoder-flowchart/tests     # data model tests
+uv run pytest tests -m "not slow"                    # cross-package tests
 ```
 
-**If the above doesn't work** (locale not installed):
-```bash
-# Install locale support
-sudo apt-get update && sudo apt-get install -y locales
+`tests/` spans both packages. Tests marked `slow` drive a real `claude` CLI
+and cost tokens; deselect them with `-m "not slow"`.
 
-# Generate en_US.UTF-8 locale
-sudo locale-gen en_US.UTF-8
+## License
 
-# Run the app
-LANG=en_US.UTF-8 uv run python -m src.main
-```
-
-**Alternative locales** if en_US.UTF-8 is unavailable:
-```bash
-# Try C.UTF-8 (usually available)
-LC_ALL=C.UTF-8 uv run python -m src.main
-```
-
-To make it permanent, add `export LANG=en_US.UTF-8` to your `~/.bashrc`.
+MIT — see [LICENSE](LICENSE).

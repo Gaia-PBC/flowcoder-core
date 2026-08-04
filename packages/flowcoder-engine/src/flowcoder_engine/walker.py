@@ -32,6 +32,7 @@ from opentelemetry import trace
 
 from .json_parser import parse_json_from_response
 from .resolver import CommandNotFoundError, resolve_command
+from .subprocess import ReadInterruptedError, ReadTimeoutError
 from .templates import evaluate_template
 
 if TYPE_CHECKING:
@@ -263,7 +264,10 @@ class GraphWalker:
                     self._log.append(entry)
 
                     self._protocol.emit_block_complete(
-                        current.id, current.name, result.success
+                        current.id,
+                        current.name,
+                        result.success,
+                        session_id=self._session.session_id,
                     )
 
                     if result.exit_code is not None:
@@ -360,9 +364,29 @@ class GraphWalker:
                     f"```json\n{schema_str}\n```"
                 )
 
-            result = await self._session.query(
-                prompt_text, block_id=block.id, block_name=block.name
-            )
+            start = time.monotonic()
+            try:
+                result = await asyncio.wait_for(
+                    self._session.query(
+                        prompt_text, block_id=block.id, block_name=block.name
+                    ),
+                    timeout=block.timeout_seconds,
+                )
+            except asyncio.TimeoutError:
+                elapsed_ms = int((time.monotonic() - start) * 1000)
+                # Kill the Claude subprocess so the session doesn't keep running.
+                await self._session.stop()
+                self._protocol.emit_block_timeout(
+                    block.id,
+                    block.name,
+                    block.type,
+                    elapsed_ms,
+                    block.timeout_seconds,
+                )
+                return BlockResult.fail(
+                    f"Block timed out after {elapsed_ms}ms "
+                    f"(limit: {block.timeout_seconds}s)"
+                )
 
             # Save raw output to variable if requested
             if block.output_variable and result.response_text:
@@ -714,23 +738,73 @@ class GraphWalker:
             {"block_id": block.id, "block_name": block.name},
         )
 
-        while True:
-            msg = await self._protocol.read_message()
-            if (
-                msg.get("type") == "input_response"
-                and msg.get("block_id") == block.id
-            ):
-                user_text = msg.get("content", "")
-                break
-            self._protocol.push_message(msg)
+        # Wait for this block's input_response, bounded by timeout_seconds so a
+        # missing response fails the block instead of hanging forever (there was
+        # no bound here before).  With delivery wired up during takeover, a
+        # non-matching message must not be re-queued into the same inbox we are
+        # draining or the loop busy-spins, so such messages are buffered and
+        # re-pushed once, after the wait.
+        wait_start = time.monotonic()
+        buffered: list[dict] = []
+        user_text = ""
+        try:
+            while True:
+                remaining = block.timeout_seconds - (time.monotonic() - wait_start)
+                try:
+                    if remaining <= 0:
+                        raise TimeoutError
+                    msg = await asyncio.wait_for(
+                        self._protocol.read_message(), remaining
+                    )
+                except TimeoutError:
+                    elapsed_ms = int((time.monotonic() - wait_start) * 1000)
+                    self._protocol.emit_block_timeout(
+                        block.id,
+                        block.name,
+                        block.type,
+                        elapsed_ms,
+                        block.timeout_seconds,
+                    )
+                    return BlockResult.fail(
+                        f"Input block '{block.name}': no input received "
+                        f"within {block.timeout_seconds}s"
+                    )
+                if (
+                    msg.get("type") == "input_response"
+                    and msg.get("block_id") == block.id
+                ):
+                    user_text = msg.get("content", "")
+                    break
+                buffered.append(msg)
+        finally:
+            for pending in buffered:
+                self._protocol.push_message(pending)
 
         if not user_text:
             self._protocol.log(f"Input block '{block.name}': received empty input")
             return BlockResult.ok(output="")
 
-        result = await self._session.query(
-            user_text, block_id=block.id, block_name=block.name
-        )
+        start = time.monotonic()
+        try:
+            result = await self._session.query(
+                user_text, block_id=block.id, block_name=block.name
+            )
+        except ReadTimeoutError:
+            # The inner CLI went silent after the input was delivered.  Report
+            # a failed block instead of letting the flowchart hang forever.
+            elapsed_ms = int((time.monotonic() - start) * 1000)
+            self._protocol.emit_block_timeout(
+                block.id, block.name, block.type, elapsed_ms, block.timeout_seconds
+            )
+            return BlockResult.fail(
+                f"Input block '{block.name}': agent stopped responding "
+                f"after {elapsed_ms}ms (CLI idle timeout)"
+            )
+        except ReadInterruptedError:
+            return BlockResult.fail(
+                f"Input block '{block.name}': interrupted while "
+                f"waiting for the agent"
+            )
 
         if block.output_variable and result.response_text:
             self._variables[block.output_variable] = result.response_text

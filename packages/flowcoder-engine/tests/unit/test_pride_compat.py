@@ -22,7 +22,11 @@ from flowcoder_flowchart import (
 
 from tests.conftest import MockProtocol, MockSession
 
-PRIDE_COMMANDS_DIR = Path.home() / "pride-flowcoder" / "commands"
+# Pride example flowcharts are vendored into the repo's own commands/ dir.
+# (Was ~/pride-flowcoder/commands — an external-install path that no longer
+# exists, which silently skipped every example-load test. Repo layout:
+# <repo>/packages/flowcoder-engine/tests/unit/this_file -> parents[4] == <repo>.)
+PRIDE_COMMANDS_DIR = Path(__file__).resolve().parents[4] / "commands"
 
 
 # ------------------------------------------------------------------
@@ -276,10 +280,6 @@ class TestPrideJsonParsing:
 class TestPrideExamplesLoad:
     """Load every Pride example and verify it parses."""
 
-    @pytest.mark.skipif(
-        not PRIDE_COMMANDS_DIR.exists(),
-        reason="Pride flowcoder not installed at ~/pride-flowcoder",
-    )
     @pytest.mark.parametrize("name", [
         "ex0-design-doc",
         "ex1-do-until-done",

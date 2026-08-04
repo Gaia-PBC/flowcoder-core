@@ -1,10 +1,6 @@
 # Ignore everything by default
 *
 
-# Allow src/ directory and all its contents
-!src/
-!src/**
-
 # But ignore __pycache__ everywhere
 __pycache__/
 
@@ -15,10 +11,6 @@ __pycache__/
 !commands/ex2-testing-loop.json
 !commands/ex3-improve-project.json
 !commands/all-examples.json
-
-# Allow specific images in images/
-!images/
-!images/flowchart-example.png
 
 # Allow root level files
 !pyproject.toml
@@ -35,10 +27,6 @@ __pycache__/
 
 # Allow .python-version
 !.python-version
-
-# Allow package.json and package-lock.json for npm dependencies
-!package.json
-!package-lock.json
 
 # Allow packages/ directory (vendored Pydantic packages)
 !packages/

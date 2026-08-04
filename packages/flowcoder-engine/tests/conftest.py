@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 from flowcoder_engine.session import BaseSession, QueryResult
 from flowcoder_flowchart import (
@@ -23,13 +25,21 @@ from flowcoder_flowchart import (
 class MockSession(BaseSession):
     """Mock session for unit testing the walker."""
 
-    def __init__(self, responses: list[str] | None = None):
+    def __init__(
+        self,
+        responses: list[str] | None = None,
+        *,
+        delay_seconds: float = 0.0,
+        session_id: str | None = "mock-session",
+    ):
         self._name = "mock"
-        self._session_id: str | None = "mock-session"
+        self._session_id: str | None = session_id
         self._total_cost = 0.0
         self._responses = list(responses or ["Mock response"])
         self._call_count = 0
         self._clear_count = 0
+        self._delay_seconds = delay_seconds
+        self._stop_count = 0
 
     @property
     def name(self) -> str:
@@ -48,7 +58,11 @@ class MockSession(BaseSession):
         return True
 
     def clone(self, name: str) -> MockSession:
-        ms = MockSession(responses=list(self._responses))
+        ms = MockSession(
+            responses=list(self._responses),
+            delay_seconds=self._delay_seconds,
+            session_id=self._session_id,
+        )
         ms._name = name
         return ms
 
@@ -61,6 +75,8 @@ class MockSession(BaseSession):
     async def query(
         self, prompt: str, block_id: str = "", block_name: str = ""
     ) -> QueryResult:
+        if self._delay_seconds:
+            await asyncio.sleep(self._delay_seconds)
         idx = min(self._call_count, len(self._responses) - 1)
         text = self._responses[idx]
         self._call_count += 1
@@ -71,7 +87,7 @@ class MockSession(BaseSession):
         self._clear_count += 1
 
     async def stop(self) -> None:
-        pass
+        self._stop_count += 1
 
 
 class MockProtocol:
@@ -99,11 +115,44 @@ class MockProtocol:
             "data": {"block_id": block_id, "block_name": block_name, "block_type": block_type},
         })
 
-    def emit_block_complete(self, block_id: str, block_name: str, success: bool) -> None:
+    def emit_block_complete(
+        self,
+        block_id: str,
+        block_name: str,
+        success: bool,
+        session_id: str | None = None,
+    ) -> None:
+        data: dict = {
+            "block_id": block_id,
+            "block_name": block_name,
+            "success": success,
+        }
+        if session_id is not None:
+            data["session_id"] = session_id
         self.messages.append({
             "type": "system",
             "subtype": "block_complete",
-            "data": {"block_id": block_id, "block_name": block_name, "success": success},
+            "data": data,
+        })
+
+    def emit_block_timeout(
+        self,
+        block_id: str,
+        block_name: str,
+        block_type: str,
+        elapsed_ms: int,
+        timeout_seconds: int,
+    ) -> None:
+        self.messages.append({
+            "type": "system",
+            "subtype": "block_timeout",
+            "data": {
+                "block_id": block_id,
+                "block_name": block_name,
+                "block_type": block_type,
+                "elapsed_ms": elapsed_ms,
+                "timeout_seconds": timeout_seconds,
+            },
         })
 
     def emit_result(self, *args, **kwargs) -> None:
@@ -299,3 +348,17 @@ def command_flowchart() -> Flowchart:
             Connection(source_id="c", target_id="e"),
         ],
     )
+
+
+# ── Policy: skips are failures (SOUL prompting fix #5) ────────────────
+# A skipped/xfailed test produces zero evidence, so a suite may not
+# contain one and still be reported as passing. Convert any skip/xfail
+# outcome into a failure. Deselection (e.g. -m "not slow") is untouched:
+# deselected tests are never collected and produce no report.
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_makereport(item, call):
+    report = yield
+    if report.skipped:
+        report.outcome = "failed"
+        report.longrepr = f"SKIP DISALLOWED by project policy (skips are failures): {report.longrepr}"
+    return report
