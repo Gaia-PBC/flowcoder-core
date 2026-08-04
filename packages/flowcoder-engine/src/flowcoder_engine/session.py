@@ -153,6 +153,35 @@ class BaseSession(ABC):
         """
 
 
+def _strip_continuity_flags(cmd: list[str]) -> list[str]:
+    """Return ``cmd`` with conversation-continuity flags removed.
+
+    Drops ``--resume [id]``, ``--continue``, and ``--session-id [id]``.  A
+    refresh (``clear()``) means "start a new conversation", so these flags —
+    which a host such as axi injects at launch for wake-continuity — must not
+    survive into the respawned process, or the "cleared" session would simply
+    reload the prior conversation.
+    """
+    out: list[str] = []
+    i = 0
+    while i < len(cmd):
+        tok = cmd[i]
+        if tok in ("--resume", "--session-id"):
+            # Drop the flag and its value, unless the next token is another flag
+            # (i.e. the flag was used without an explicit value).
+            if i + 1 < len(cmd) and not cmd[i + 1].startswith("-"):
+                i += 2
+            else:
+                i += 1
+            continue
+        if tok == "--continue":
+            i += 1
+            continue
+        out.append(tok)
+        i += 1
+    return out
+
+
 class ClaudeSession(BaseSession):
     """A single Claude CLI subprocess speaking stream-json protocol."""
 
@@ -471,12 +500,18 @@ class ClaudeSession(BaseSession):
                 log.debug("[%s stderr] %s", self.name, line)
 
     async def clear(self) -> None:
-        """Clear conversation by restarting the subprocess.
+        """Clear conversation by restarting the subprocess with a fresh session.
 
-        Cost tracking is preserved across restarts.
+        Cost tracking is preserved across restarts.  Any conversation-continuity
+        flags (``--resume``/``--continue``/a pinned ``--session-id``) are
+        stripped from the launch command first: a refresh means "do not
+        continue", and respawning with ``--resume`` would reload the very
+        conversation the refresh is meant to discard.
         """
         _tracer.start_span("session.clear", attributes={"session.name": self.name}).end()
         self._last_cli_cost = 0.0
+        self._claude_cmd = _strip_continuity_flags(self._claude_cmd)
+        self._session_id = None
         await self.stop()
         await self.start()
 
