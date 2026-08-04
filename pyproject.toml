@@ -1,19 +1,18 @@
 [project]
 name = "flowcoder"
 version = "1.0.0"
-description = "A visual flowchart builder for creating custom automated workflows with Claude Code (and OpenAI models via anthropic-proxy)"
+description = "Flowchart execution engine for Claude Code"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "flowcoder-engine>=0.1.0",
     "flowcoder-flowchart>=0.1.0",
-    "pydantic>=2.0.0",
-    "pygame>=2.5.0",
-    "jsonschema>=4.19.0",
-    "jsonpath-ng>=1.6.0",
-    "asyncio-throttle>=1.0.0",
-    "tkfilebrowser>=2.3.2",
 ]
+
+# The repo root ships no source of its own — it is a workspace shell that
+# pins the two packages and hosts the cross-package tests in tests/.
+[tool.uv]
+package = false
 
 [tool.uv.sources]
 flowcoder-engine = { path = "packages/flowcoder-engine", editable = true }
