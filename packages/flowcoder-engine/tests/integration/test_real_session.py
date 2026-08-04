@@ -39,11 +39,31 @@ pytestmark = [
     pytest.mark.integration,
 ]
 
-# Common opts for all test sessions
-_TEST_OPTS = {
-    "model": "haiku",
-    "max_budget_usd": "0.05",
-}
+# Common model for all test sessions (haiku for speed/cost).  The current
+# ClaudeSession API takes a claude_cmd LIST (not an opts dict), so build the
+# inner CLI command the same shape the engine does.  (The old opts dict —
+# model / max_budget_usd / system_prompt — predates that API; max_budget_usd
+# has no equivalent on ClaudeSession, and these prompts are trivial on haiku.)
+_TEST_MODEL = "haiku"
+
+
+def _claude_cmd(model: str = _TEST_MODEL, system_prompt: str | None = None) -> list[str]:
+    cmd = [
+        _CLAUDE_PATH,
+        "-p",
+        "--input-format", "stream-json",
+        "--output-format", "stream-json",
+        "--verbose",
+        "--model", model,
+    ]
+    if system_prompt:
+        cmd += ["--system-prompt", system_prompt]
+    return cmd
+
+
+def _session(name, protocol=None, *, model: str = _TEST_MODEL, system_prompt: str | None = None):
+    """Build a ClaudeSession against the real claude CLI using the current API."""
+    return Session(name, _claude_cmd(model, system_prompt), protocol=protocol)
 
 
 # ── Session-level tests ──────────────────────────────────────────────
@@ -54,7 +74,7 @@ class TestRealSession:
 
     async def test_basic_query(self):
         """Session can send a prompt and get a response."""
-        session = Session("test", _CLAUDE_PATH, _TEST_OPTS)
+        session = _session("test")
         try:
             await session.start()
             assert session.is_running
@@ -72,7 +92,7 @@ class TestRealSession:
 
     async def test_session_tracks_cost(self):
         """Session accumulates total_cost across queries."""
-        session = Session("test", _CLAUDE_PATH, _TEST_OPTS)
+        session = _session("test")
         try:
             await session.start()
             await session.query("Reply with the number 1")
@@ -87,7 +107,7 @@ class TestRealSession:
     async def test_message_forwarding(self):
         """Protocol receives forwarded assistant messages."""
         proto = MockProtocol()
-        session = Session("test", _CLAUDE_PATH, _TEST_OPTS, protocol=proto)
+        session = _session("test", protocol=proto)
         try:
             await session.start()
             await session.query(
@@ -95,23 +115,33 @@ class TestRealSession:
                 block_id="b1",
                 block_name="TestBlock",
             )
-            # Should have forwarded at least one assistant message
+            # Should have forwarded at least one assistant message.  A real
+            # claude query emits a leading 'system' init message before the
+            # assistant turn, and the engine forwards system messages too, so
+            # assert the assistant is present rather than assuming it is first.
             assert len(proto.forwarded) > 0
-            fwd = proto.forwarded[0]
-            assert fwd["session"] == "test"
-            assert fwd["block_id"] == "b1"
-            assert fwd["block_name"] == "TestBlock"
-            assert fwd["message"]["type"] == "assistant"
+            # Every forwarded message carries provenance.
+            for fwd in proto.forwarded:
+                assert fwd["session"] == "test"
+                assert fwd["block_id"] == "b1"
+                assert fwd["block_name"] == "TestBlock"
+            assistant = [
+                f for f in proto.forwarded
+                if f["message"].get("type") == "assistant"
+            ]
+            assert assistant, (
+                "expected a forwarded assistant message, got "
+                f"{[f['message'].get('type') for f in proto.forwarded]}"
+            )
         finally:
             await session.stop()
 
     async def test_system_prompt(self):
         """Session respects system_prompt option."""
-        opts = {
-            **_TEST_OPTS,
-            "system_prompt": "You are a calculator. Only output numbers. No text.",
-        }
-        session = Session("calc", _CLAUDE_PATH, opts)
+        session = _session(
+            "calc",
+            system_prompt="You are a calculator. Only output numbers. No text.",
+        )
         try:
             await session.start()
             result = await session.query("What is 2 + 3?")
@@ -145,7 +175,7 @@ class TestRealWalker:
         )
 
         proto = MockProtocol()
-        session = Session("test", _CLAUDE_PATH, _TEST_OPTS, protocol=proto)
+        session = _session("test", protocol=proto)
         try:
             await session.start()
             walker = GraphWalker(fc, session, {}, proto)
@@ -182,7 +212,7 @@ class TestRealWalker:
         )
 
         proto = MockProtocol()
-        session = Session("test", _CLAUDE_PATH, _TEST_OPTS, protocol=proto)
+        session = _session("test", protocol=proto)
         try:
             await session.start()
             walker = GraphWalker(fc, session, {}, proto)
@@ -210,7 +240,7 @@ class TestRealWalker:
         )
 
         proto = MockProtocol()
-        session = Session("test", _CLAUDE_PATH, _TEST_OPTS, protocol=proto)
+        session = _session("test", protocol=proto)
         try:
             await session.start()
             walker = GraphWalker(fc, session, {"$1": "FLAMINGO"}, proto)
@@ -235,7 +265,7 @@ class TestRealWalker:
         )
 
         proto = MockProtocol()
-        session = Session("test", _CLAUDE_PATH, _TEST_OPTS, protocol=proto)
+        session = _session("test", protocol=proto)
         try:
             await session.start()
             walker = GraphWalker(fc, session, {}, proto)
