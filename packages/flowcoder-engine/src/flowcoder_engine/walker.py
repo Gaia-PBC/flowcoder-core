@@ -738,15 +738,47 @@ class GraphWalker:
             {"block_id": block.id, "block_name": block.name},
         )
 
-        while True:
-            msg = await self._protocol.read_message()
-            if (
-                msg.get("type") == "input_response"
-                and msg.get("block_id") == block.id
-            ):
-                user_text = msg.get("content", "")
-                break
-            self._protocol.push_message(msg)
+        # Wait for this block's input_response, bounded by timeout_seconds so a
+        # missing response fails the block instead of hanging forever (there was
+        # no bound here before).  With delivery wired up during takeover, a
+        # non-matching message must not be re-queued into the same inbox we are
+        # draining or the loop busy-spins, so such messages are buffered and
+        # re-pushed once, after the wait.
+        wait_start = time.monotonic()
+        buffered: list[dict] = []
+        user_text = ""
+        try:
+            while True:
+                remaining = block.timeout_seconds - (time.monotonic() - wait_start)
+                try:
+                    if remaining <= 0:
+                        raise TimeoutError
+                    msg = await asyncio.wait_for(
+                        self._protocol.read_message(), remaining
+                    )
+                except TimeoutError:
+                    elapsed_ms = int((time.monotonic() - wait_start) * 1000)
+                    self._protocol.emit_block_timeout(
+                        block.id,
+                        block.name,
+                        block.type,
+                        elapsed_ms,
+                        block.timeout_seconds,
+                    )
+                    return BlockResult.fail(
+                        f"Input block '{block.name}': no input received "
+                        f"within {block.timeout_seconds}s"
+                    )
+                if (
+                    msg.get("type") == "input_response"
+                    and msg.get("block_id") == block.id
+                ):
+                    user_text = msg.get("content", "")
+                    break
+                buffered.append(msg)
+        finally:
+            for pending in buffered:
+                self._protocol.push_message(pending)
 
         if not user_text:
             self._protocol.log(f"Input block '{block.name}': received empty input")
