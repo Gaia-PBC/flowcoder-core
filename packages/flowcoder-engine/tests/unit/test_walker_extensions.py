@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 
 import pytest
+from flowcoder_engine.subprocess import ReadTimeoutError
 from flowcoder_engine.walker import BlockResult, ExecutionResult, GraphWalker
 from flowcoder_flowchart import (
     Connection,
@@ -198,6 +199,58 @@ class TestInputBlock:
         walker = GraphWalker(fc, mock_session, {}, proto)
         result = await walker.run()
         assert result.status == "completed"
+
+    async def test_input_read_timeout_reports_block_timeout(self, mock_protocol):
+        """An idle CLI during an input block must fail the block, not raise.
+
+        The ReadTimeoutError handler reports the block's configured timeout,
+        so timeout_seconds has to exist on InputBlock.  It was originally
+        added to PromptBlock alone, which made this path raise
+        AttributeError -- on exactly the scenario the handler exists for.
+        """
+
+        class TimingOutSession(MockSession):
+            async def query(self, *args, **kwargs):
+                raise ReadTimeoutError("CLI idle during query")
+
+        fc = Flowchart(
+            blocks={
+                "s": StartBlock(id="s"),
+                "i": InputBlock(id="i", name="Ask"),
+                "e": EndBlock(id="e"),
+            },
+            connections=[
+                Connection(source_id="s", target_id="i"),
+                Connection(source_id="i", target_id="e"),
+            ],
+        )
+
+        class InboxProtocol(MockProtocol):
+            def __init__(self):
+                super().__init__()
+                self._inbox: asyncio.Queue[dict] = asyncio.Queue()
+                self._inbox.put_nowait(
+                    {"type": "input_response", "block_id": "i", "content": "hello"}
+                )
+
+            async def read_message(self):
+                return await self._inbox.get()
+
+            def push_message(self, msg):
+                self._inbox.put_nowait(msg)
+
+        proto = InboxProtocol()
+        walker = GraphWalker(fc, TimingOutSession(), {}, proto)
+        result = await walker.run()
+
+        assert result.status != "completed"
+        timeouts = [
+            m for m in proto.messages if m.get("subtype") == "block_timeout"
+        ]
+        assert timeouts, "expected a block_timeout event for the idle input block"
+        data = timeouts[0]["data"]
+        assert data["block_id"] == "i"
+        assert data["timeout_seconds"] == 21600
 
 
 class TestCleanup:

@@ -50,6 +50,9 @@ class BlockBase(BaseModel):
     name: str = ""
     session: str = "default"
     position: Position | None = None
+    # Any block the walker can time out needs this, not just prompts: the
+    # input block's ReadTimeoutError handler reports it too.
+    timeout_seconds: int = 21600
 
 
 class StartBlock(BlockBase):
@@ -65,7 +68,6 @@ class PromptBlock(BlockBase):
     prompt: str
     output_variable: str | None = None
     output_schema: dict[str, Any] | None = None
-    timeout_seconds: int = 21600
 
 
 class BranchBlock(BlockBase):
