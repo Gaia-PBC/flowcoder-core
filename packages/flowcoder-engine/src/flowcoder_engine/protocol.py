@@ -69,6 +69,21 @@ class ProtocolHandler:
         """Push a message directly into the inbox queue."""
         self._inbox.put_nowait(msg)
 
+    def drain_inbox(self) -> list[dict[str, Any]]:
+        """Remove and return every message currently queued in the inbox.
+
+        Used to hand back messages that were routed into the inbox but never
+        consumed (e.g. when a flowchart takeover ends), so no client message is
+        silently dropped.
+        """
+        drained: list[dict[str, Any]] = []
+        while True:
+            try:
+                drained.append(self._inbox.get_nowait())
+            except asyncio.QueueEmpty:
+                break
+        return drained
+
     async def forward_control_request(
         self, inner_request: dict[str, Any]
     ) -> dict[str, Any]:

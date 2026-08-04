@@ -311,6 +311,7 @@ async def main() -> None:
                         protocol.log(f"Flowchart takeover: /{cmd_name} {cmd_args}")
                         await _run_flowchart_takeover(
                             session, cmd, cmd_name, cmd_args, protocol, args, factory,
+                            router=router,
                         )
                     else:
                         # Normal message — proxy to inner claude
@@ -421,6 +422,28 @@ async def _forward_until_control_response(
             return
 
 
+async def _pump_router_to_inbox(
+    router: _MessageRouter, protocol: ProtocolHandler
+) -> None:
+    """Feed the walker's inbox during a flowchart takeover.
+
+    In engine mode stdin is drained by ``_MessageRouter`` into its
+    ``message_queue``, but the walker reads user input from the
+    ``ProtocolHandler`` inbox, and the main loop that normally bridges the two
+    is blocked inside ``walker.run()`` for the whole takeover.  This keeps that
+    bridge alive so input blocks receive their responses.
+    """
+    while True:
+        msg = await router.read_message()
+        if msg is None:
+            # EOF/shutdown sentinel: never push None into the inbox (the walker
+            # calls .get on the message).  Hand it back so the main loop sees
+            # the shutdown once takeover unwinds, then stop pumping.
+            router.message_queue.put_nowait(None)
+            return
+        protocol.push_message(msg)
+
+
 async def _run_flowchart_takeover(
     session: BaseSession,
     cmd: fc_lib.Command,
@@ -429,6 +452,7 @@ async def _run_flowchart_takeover(
     protocol: ProtocolHandler,
     args: object,
     session_factory: SessionFactory | None = None,
+    router: _MessageRouter | None = None,
 ) -> None:
     """Execute a flowchart command in takeover mode."""
     block_count = len(cmd.flowchart.blocks)
@@ -469,6 +493,13 @@ async def _run_flowchart_takeover(
         )
 
         cost_before = session.total_cost
+
+        # During takeover the main loop is parked on this call and cannot drain
+        # the router's message_queue, so bridge it into the walker's inbox here —
+        # otherwise input blocks never receive their responses.
+        pump: asyncio.Task[None] | None = None
+        if router is not None:
+            pump = asyncio.create_task(_pump_router_to_inbox(router, protocol))
 
         try:
             result = await walker.run()
@@ -516,6 +547,19 @@ async def _run_flowchart_takeover(
                 session_id=session.session_id or "flowchart",
             )
             span.set_status(trace.StatusCode.ERROR, str(e))
+        finally:
+            if pump is not None:
+                pump.cancel()
+                try:
+                    await pump
+                except asyncio.CancelledError:
+                    pass
+                # Hand back any messages routed into the inbox but not consumed
+                # by the walker (e.g. arrived during a non-input block) so the
+                # main loop still processes them after takeover.
+                assert router is not None
+                for leftover in protocol.drain_inbox():
+                    router.message_queue.put_nowait(leftover)
 
 
 async def _handle_control_request(
