@@ -82,8 +82,16 @@ class GUIProtocolBridge(ProtocolHandler):
                 self._on_block_start(block, self._context)
 
     def emit_block_complete(
-        self, block_id: str, block_name: str, success: bool
+        self,
+        block_id: str,
+        block_name: str,
+        success: bool,
+        session_id: str | None = None,
     ) -> None:
+        # session_id is ignored: it exists so out-of-process drivers can keep
+        # their stored id in sync, but the GUI already owns the session object
+        # and reads the id from GUISessionAdapter.  Same as
+        # emit_flowchart_complete below.
         if self._on_block_complete:
             block = self._flowchart.blocks.get(block_id)
             if block:
