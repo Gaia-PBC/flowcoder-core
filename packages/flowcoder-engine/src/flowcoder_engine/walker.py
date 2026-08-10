@@ -602,6 +602,11 @@ class GraphWalker:
             )
 
         command_name = evaluate_template(block.command_name, self._variables)
+        resolved_model = (
+            evaluate_template(block.model, self._variables)
+            if block.model
+            else block.model
+        )
 
         try:
             cmd = resolve_command(command_name, search_paths=self._search_paths)
@@ -623,17 +628,17 @@ class GraphWalker:
 
         if block.backend and self._session_factory:
             child_session = self._session_factory.create(
-                block.backend, agent_name, block.model
+                block.backend, agent_name, resolved_model
             )
             self._protocol.log(
                 f"Spawning agent '{agent_name}' with backend '{block.backend}'"
-                f"{f' model {block.model!r}' if block.model else ''} "
+                f"{f' model {resolved_model!r}' if resolved_model else ''} "
                 f"running command '{command_name}'"
             )
-        elif block.model:
-            child_session = self._session.with_model(block.model).clone(agent_name)
+        elif resolved_model:
+            child_session = self._session.with_model(resolved_model).clone(agent_name)
             self._protocol.log(
-                f"Spawning agent '{agent_name}' with model '{block.model}' "
+                f"Spawning agent '{agent_name}' with model '{resolved_model}' "
                 f"running command '{command_name}'"
             )
         else:
