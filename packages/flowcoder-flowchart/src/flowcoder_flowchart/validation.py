@@ -130,12 +130,9 @@ def validate(flowchart: Flowchart) -> ValidationResult:
                     f"Spawn block '{block.name or bid}' has empty command_name"
                 )
 
-    # Wait blocks: non-empty wait_for
-    for bid, block in flowchart.blocks.items():
-        if isinstance(block, WaitBlock) and len(block.wait_for) == 0:
-            errors.append(
-                f"Wait block '{block.name or bid}' has empty wait_for list"
-            )
+    # Wait blocks: an empty wait_for is legal -- it means "join all currently
+    # pending spawns". Whether spawns are actually joined before an end/exit is
+    # checked structurally in _check_spawn_wait_paths below.
 
     # Exit blocks: validate exit code range
     for bid, block in flowchart.blocks.items():
@@ -174,7 +171,23 @@ def _check_spawn_wait_paths(
     errors: list[str],
     warnings: list[str],
 ) -> None:
-    """Check that spawn blocks have corresponding wait blocks on all paths."""
+    """Enforce the spawn/wait safety invariant.
+
+    Every spawned child must be joined by a *covering* wait on every path
+    before the flowchart can reach an end/exit -- otherwise the child is never
+    awaited and gets silently cancelled when the parent tears down. A wait W
+    "covers" a spawn S when:
+
+      * ``W.wait_for`` is empty (empty == "join all currently-pending"), or
+      * ``S.agent_name`` is listed in ``W.wait_for``.
+
+    Fan-out is fully legal: many pending spawns joined by a single wait (named
+    or empty) is the intended shape. The only things rejected are genuine leaks
+    (a spawn that can reach an end without being joined) and waits naming an
+    agent that no spawn creates. A templated agent name cannot be matched
+    statically with certainty, so it downgrades a would-be error to a warning --
+    the validator never blocks a correct dynamic fan-out.
+    """
     adj: dict[str, list[str]] = {bid: [] for bid in flowchart.blocks}
     for conn in flowchart.connections:
         if conn.source_id in adj:
@@ -186,12 +199,22 @@ def _check_spawn_wait_paths(
         if isinstance(block, SpawnBlock)
     ]
 
-    for spawn_id, spawn_block in spawn_blocks:
-        queue: deque[str] = deque()
-        visited: set[str] = set()
+    def _covers(wait_block: WaitBlock, agent_name: str) -> bool:
+        # Empty wait_for joins every pending child; otherwise the child must be
+        # named explicitly. A spawn and a wait that share an identical template
+        # string ("w-{{i}}") match here as strings and also at runtime.
+        return len(wait_block.wait_for) == 0 or agent_name in wait_block.wait_for
 
-        for next_id in adj.get(spawn_id, []):
-            queue.append(next_id)
+    # (a) Coverage / leak pass -- every spawn must reach a covering wait on all
+    #     paths before an end/exit. Only a *covering* wait absorbs a path; a
+    #     non-covering wait (and any other block) is traversed through.
+    for spawn_id, spawn_block in spawn_blocks:
+        agent_name = spawn_block.agent_name
+        templated = "{{" in agent_name
+
+        queue: deque[str] = deque(adj.get(spawn_id, []))
+        visited: set[str] = set()
+        leaks = False
 
         while queue:
             current = queue.popleft()
@@ -203,25 +226,61 @@ def _check_spawn_wait_paths(
             if not block:
                 continue
 
-            if isinstance(block, WaitBlock):
-                continue
+            if isinstance(block, WaitBlock) and _covers(block, agent_name):
+                continue  # child is joined on this path
             if block.type in (BlockType.END, BlockType.EXIT):
-                warnings.append(
-                    f"Spawn block '{spawn_block.name or spawn_id}' has path "
-                    f"to {block.type.value} without wait"
-                )
-                continue
-            if isinstance(block, SpawnBlock) and current != spawn_id:
-                errors.append(
-                    f"Spawn block '{spawn_block.name or spawn_id}' reaches "
-                    f"spawn block '{block.name or current}' without an "
-                    f"intervening wait"
-                )
+                leaks = True  # reached a terminal with no covering wait yet
                 continue
 
             for next_id in adj.get(current, []):
                 if next_id not in visited:
                     queue.append(next_id)
+
+        if not leaks:
+            continue
+        if templated:
+            warnings.append(
+                f"Spawn block '{spawn_block.name or spawn_id}' has a templated "
+                f"agent name '{agent_name}' that cannot be statically verified "
+                f"as joined by a wait before an end/exit; ensure a wait joins "
+                f"it at runtime"
+            )
+        else:
+            errors.append(
+                f"Spawn block '{spawn_block.name or spawn_id}' can reach an "
+                f"end/exit without a wait that joins agent '{agent_name}' -- it "
+                f"would be orphaned and cancelled"
+            )
+
+    # (b) Name-correlation pass -- every statically-named wait_for entry must
+    #     correspond to some spawn's agent_name (else it fails at runtime).
+    static_spawn_names = {
+        block.agent_name
+        for _, block in spawn_blocks
+        if "{{" not in block.agent_name
+    }
+    has_templated_spawn = any(
+        "{{" in block.agent_name for _, block in spawn_blocks
+    )
+    for bid, block in flowchart.blocks.items():
+        if not isinstance(block, WaitBlock):
+            continue
+        for entry in block.wait_for:
+            if "{{" in entry:
+                continue  # templated entry -- only resolvable at runtime
+            if entry in static_spawn_names:
+                continue
+            if has_templated_spawn:
+                warnings.append(
+                    f"Wait block '{block.name or bid}' waits for '{entry}', "
+                    f"which matches no static spawn name; a templated spawn may "
+                    f"or may not produce it at runtime"
+                )
+            else:
+                errors.append(
+                    f"Wait block '{block.name or bid}' waits for '{entry}' but "
+                    f"no spawn block creates an agent named '{entry}'"
+                )
 
 
 def _check_conditional_syntax(

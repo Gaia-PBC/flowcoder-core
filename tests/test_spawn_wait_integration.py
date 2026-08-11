@@ -26,6 +26,7 @@ from flowcoder_flowchart import (
     VariableType,
     WaitBlock,
     save_command,
+    validate,
 )
 from flowcoder_engine.walker import GraphWalker
 from flowcoder_engine.session import Session
@@ -424,6 +425,117 @@ class TestSpawnWaitBash:
         result = await walker.run()
 
         assert result.status == "completed"
+
+
+class TestValidateRunSeam:
+    """The seam no test crossed: a fan-out flowchart must pass BOTH
+    ``validate()`` and ``GraphWalker.run()``.
+
+    For a long time the validator and the runtime disagreed -- the runtime
+    joined many pending spawns at a single wait, while ``validate()`` rejected
+    that exact shape -- and it went unnoticed because no test ever ran a
+    fan-out flowchart through both layers together. These pin the two layers
+    in agreement: what the runtime can execute, the validator accepts; what
+    the runtime would orphan, the validator rejects.
+    """
+
+    @pytest.mark.asyncio
+    async def test_static_fanout_validates_and_runs(self, cmd_dir):
+        """spawn a, spawn b, wait[a, b] -> valid AND both children run."""
+        _save_cmd(cmd_dir, _make_bash_command("worker-a", "echo alpha"))
+        _save_cmd(cmd_dir, _make_bash_command("worker-b", "echo bravo"))
+
+        fc = Flowchart(
+            blocks={
+                "s": StartBlock(id="s", name="Start"),
+                "sp1": SpawnBlock(
+                    id="sp1", name="Spawn A",
+                    agent_name="alpha", command_name="worker-a",
+                ),
+                "sp2": SpawnBlock(
+                    id="sp2", name="Spawn B",
+                    agent_name="bravo", command_name="worker-b",
+                ),
+                "w": WaitBlock(id="w", name="Wait", wait_for=["alpha", "bravo"]),
+                "e": EndBlock(id="e", name="End"),
+            },
+            connections=[
+                Connection(source_id="s", target_id="sp1"),
+                Connection(source_id="sp1", target_id="sp2"),
+                Connection(source_id="sp2", target_id="w"),
+                Connection(source_id="w", target_id="e"),
+            ],
+        )
+
+        vr = validate(fc)
+        assert vr.valid, vr.errors
+
+        walker = GraphWalker(
+            fc, MockSession(), {}, MockProtocol(),
+            search_paths=[str(cmd_dir)],
+        )
+        result = await walker.run()
+        assert result.status == "completed"
+
+    @pytest.mark.asyncio
+    async def test_empty_wait_fanout_validates_and_runs(self, cmd_dir):
+        """spawn a, spawn b, wait[] (join all) -> valid AND both children run."""
+        _save_cmd(cmd_dir, _make_bash_command("worker-a", "echo alpha"))
+        _save_cmd(cmd_dir, _make_bash_command("worker-b", "echo bravo"))
+
+        fc = Flowchart(
+            blocks={
+                "s": StartBlock(id="s", name="Start"),
+                "sp1": SpawnBlock(
+                    id="sp1", name="Spawn A",
+                    agent_name="alpha", command_name="worker-a",
+                ),
+                "sp2": SpawnBlock(
+                    id="sp2", name="Spawn B",
+                    agent_name="bravo", command_name="worker-b",
+                ),
+                "w": WaitBlock(id="w", name="Wait All"),  # empty = join all
+                "e": EndBlock(id="e", name="End"),
+            },
+            connections=[
+                Connection(source_id="s", target_id="sp1"),
+                Connection(source_id="sp1", target_id="sp2"),
+                Connection(source_id="sp2", target_id="w"),
+                Connection(source_id="w", target_id="e"),
+            ],
+        )
+
+        vr = validate(fc)
+        assert vr.valid, vr.errors
+
+        walker = GraphWalker(
+            fc, MockSession(), {}, MockProtocol(),
+            search_paths=[str(cmd_dir)],
+        )
+        result = await walker.run()
+        assert result.status == "completed"
+
+    def test_orphan_spawn_rejected_by_validate(self):
+        """A spawn with no covering wait before end must be rejected by
+        validate() -- matching the runtime, which cancels the never-joined
+        child at teardown."""
+        fc = Flowchart(
+            blocks={
+                "s": StartBlock(id="s", name="Start"),
+                "sp": SpawnBlock(
+                    id="sp", name="Orphan",
+                    agent_name="ghosted", command_name="worker-a",
+                ),
+                "e": EndBlock(id="e", name="End"),
+            },
+            connections=[
+                Connection(source_id="s", target_id="sp"),
+                Connection(source_id="sp", target_id="e"),
+            ],
+        )
+        vr = validate(fc)
+        assert not vr.valid
+        assert any("ghosted" in err for err in vr.errors), vr.errors
 
 
 class TestSpawnWaitClaude:

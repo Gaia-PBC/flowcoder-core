@@ -669,7 +669,20 @@ class GraphWalker:
 
     async def _exec_wait(self, block: WaitBlock) -> BlockResult:
         """Wait for spawned agent sessions to complete."""
-        wait_for = block.wait_for if block.wait_for else list(self._spawned_tasks.keys())
+        # Template-evaluate each wait_for entry so a wait can name a child whose
+        # agent_name was itself templated (e.g. wait_for=["w-{{i}}"] joining a
+        # spawn of "w-{{i}}"). Mirrors _exec_spawn's handling of agent_name. The
+        # empty (join-all) case resolves to the live task keys, which are already
+        # resolved. De-dup while preserving order (a template can collapse to
+        # repeats, and a repeated name would miss on the second lookup).
+        if block.wait_for:
+            wait_for: list[str] = []
+            for name in block.wait_for:
+                resolved = evaluate_template(name, self._variables)
+                if resolved not in wait_for:
+                    wait_for.append(resolved)
+        else:
+            wait_for = list(self._spawned_tasks.keys())
 
         if not wait_for:
             self._protocol.log("Wait block: no spawned agents to wait for")
