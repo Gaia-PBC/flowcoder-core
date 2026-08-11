@@ -149,8 +149,12 @@ class BaseSession(ABC):
         ...
 
     @abstractmethod
-    def clone(self, name: str) -> BaseSession:
-        """Create a new session with the same config but a different name."""
+    def clone(self, name: str, cwd: str | None = None) -> BaseSession:
+        """Create a new session with the same config but a different name.
+
+        ``cwd`` overrides the working directory when provided; None inherits
+        the parent's (spawn uses this to isolate a child on disk).
+        """
         ...
 
     @abstractmethod
@@ -293,15 +297,19 @@ class ClaudeSession(BaseSession):
         self._total_cache_read_tokens += turn.cache_read_tokens
         return turn
 
-    def clone(self, name: str) -> ClaudeSession:
-        """Create a new ClaudeSession with the same config but a different name."""
+    def clone(self, name: str, cwd: str | None = None) -> ClaudeSession:
+        """Create a new ClaudeSession with the same config but a different name.
+
+        ``cwd`` overrides the working directory when provided; None inherits
+        the parent's.
+        """
         return ClaudeSession(
             name=name,
             claude_cmd=list(self._claude_cmd),
             protocol=self._protocol,
             control_callback=self._control_callback,
             env_overrides=self._env_overrides,
-            cwd=self._cwd,
+            cwd=cwd if cwd is not None else self._cwd,
             read_timeout=self._read_timeout,
         )
 

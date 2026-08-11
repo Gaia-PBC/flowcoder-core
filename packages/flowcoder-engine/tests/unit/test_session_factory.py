@@ -33,7 +33,7 @@ class StubSession(BaseSession):
     def is_running(self) -> bool:
         return False
 
-    def clone(self, name: str) -> StubSession:
+    def clone(self, name: str, cwd: str | None = None) -> StubSession:
         return StubSession(name, self._backend, self._model)
 
     def with_model(self, model: str) -> StubSession:

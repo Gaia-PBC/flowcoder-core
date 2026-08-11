@@ -212,6 +212,7 @@ class TestSpawnBlock:
         assert b.cache_creation_tokens_variable is None
         assert b.cache_read_tokens_variable is None
         assert b.config_file is None
+        assert b.cwd is None
 
     def test_defaults(self):
         b = SpawnBlock()
@@ -270,6 +271,18 @@ class TestSpawnBlock:
         assert restored.output_tokens_variable == "out_1"
         assert restored.cache_creation_tokens_variable == "cc_1"
         assert restored.cache_read_tokens_variable == "cr_1"
+
+    def test_roundtrip_cwd(self):
+        original = SpawnBlock(
+            id="sp3",
+            name="Spawn",
+            agent_name="cell-1",
+            command_name="tb-cell",
+            cwd="{{base}}/cell-1",
+        )
+        restored = BlockAdapter.validate_python(original.model_dump())
+        assert isinstance(restored, SpawnBlock)
+        assert restored.cwd == "{{base}}/cell-1"
 
 
 class TestWaitBlock:

@@ -44,8 +44,8 @@ class _CostSession(MockSession):
     runs the sub-flowchart reports ``_CHILD_COST`` as its ``total_cost``.
     """
 
-    def clone(self, name: str) -> MockSession:
-        child = super().clone(name)
+    def clone(self, name: str, cwd: str | None = None) -> MockSession:
+        child = super().clone(name, cwd)
         child._total_cost = _CHILD_COST
         return child
 

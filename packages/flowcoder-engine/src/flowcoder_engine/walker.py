@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 import shlex
 import time
@@ -637,23 +638,41 @@ class GraphWalker:
             for i, part in enumerate(parts, 1):
                 child_vars[f"${i}"] = part
 
+        # Optional per-spawn working directory: template it (so it can use
+        # {{var}}/$N), create it, and hand it to the child so parallel siblings
+        # can be isolated on disk.  Unset -> None -> child inherits parent cwd.
+        spawn_cwd: str | None = None
+        if block.cwd:
+            spawn_cwd = evaluate_template(block.cwd, self._variables)
+            os.makedirs(spawn_cwd, exist_ok=True)
+
         if block.backend and self._session_factory:
+            # NOTE: the backend path builds via SessionCreator(name, model),
+            # which has no cwd parameter, so block.cwd is not honored here yet.
+            # Follow-up: thread cwd through SessionFactory.create / SessionCreator.
             child_session = self._session_factory.create(
                 block.backend, agent_name, resolved_model
             )
+            if spawn_cwd is not None:
+                self._protocol.log(
+                    f"Note: per-spawn cwd is not applied to backend-spawned "
+                    f"agent '{agent_name}' (backend factory has no cwd param)"
+                )
             self._protocol.log(
                 f"Spawning agent '{agent_name}' with backend '{block.backend}'"
                 f"{f' model {resolved_model!r}' if resolved_model else ''} "
                 f"running command '{command_name}'"
             )
         elif resolved_model:
-            child_session = self._session.with_model(resolved_model).clone(agent_name)
+            child_session = self._session.with_model(resolved_model).clone(
+                agent_name, cwd=spawn_cwd
+            )
             self._protocol.log(
                 f"Spawning agent '{agent_name}' with model '{resolved_model}' "
                 f"running command '{command_name}'"
             )
         else:
-            child_session = self._session.clone(agent_name)
+            child_session = self._session.clone(agent_name, cwd=spawn_cwd)
             self._protocol.log(
                 f"Spawning agent '{agent_name}' running command '{command_name}'"
             )

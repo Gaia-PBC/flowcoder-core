@@ -36,6 +36,7 @@ class MockSession(BaseSession):
         self._session_id: str | None = session_id
         self._total_cost = 0.0
         self._token_usage = TokenUsage()
+        self._clone_cwd: str | None = None
         self._responses = list(responses or ["Mock response"])
         self._call_count = 0
         self._clear_count = 0
@@ -62,13 +63,15 @@ class MockSession(BaseSession):
     def is_running(self) -> bool:
         return True
 
-    def clone(self, name: str) -> MockSession:
+    def clone(self, name: str, cwd: str | None = None) -> MockSession:
         ms = MockSession(
             responses=list(self._responses),
             delay_seconds=self._delay_seconds,
             session_id=self._session_id,
         )
         ms._name = name
+        # Record the cwd the walker cloned with, so spawn-cwd wiring is testable.
+        ms._clone_cwd = cwd
         return ms
 
     def with_model(self, model: str) -> MockSession:

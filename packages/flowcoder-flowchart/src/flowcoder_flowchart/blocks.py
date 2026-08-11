@@ -134,6 +134,7 @@ class SpawnBlock(BlockBase):
     config_file: str | None = None
     model: str | None = None
     backend: str | None = None
+    cwd: str | None = None
 
 
 class WaitBlock(BlockBase):

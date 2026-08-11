@@ -52,8 +52,8 @@ class _MetricSession(MockSession):
     sub-flowchart reports ``_CHILD_COST``/``_CHILD_TOKENS``.
     """
 
-    def clone(self, name: str) -> MockSession:
-        child = super().clone(name)
+    def clone(self, name: str, cwd: str | None = None) -> MockSession:
+        child = super().clone(name, cwd)
         child._total_cost = _CHILD_COST
         child._token_usage = _CHILD_TOKENS
         return child
