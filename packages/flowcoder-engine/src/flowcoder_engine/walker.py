@@ -730,30 +730,27 @@ class GraphWalker:
 
             # Store per-child metrics (exit code, cost, duration, token
             # breakdown) into the parent variables named on the matching
-            # spawn block.
+            # spawn block.  Each variable NAME is template-evaluated (like
+            # agent_name), so a fan-out can target a unique variable per child,
+            # e.g. cost_variable: "cost_{{i}}" -> cost_1, cost_2, ...  A literal
+            # name (no {{...}}) passes through unchanged.
             for b in self._flowchart.blocks.values():
                 if not isinstance(b, SpawnBlock):
                     continue
                 if evaluate_template(b.agent_name, self._variables) != agent_name:
                     continue
-                if b.exit_code_variable:
-                    self._variables[b.exit_code_variable] = exec_result.exit_code
-                if b.cost_variable:
-                    self._variables[b.cost_variable] = exec_result.cost_usd
-                if b.duration_variable:
-                    self._variables[b.duration_variable] = exec_result.duration_ms
-                if b.input_tokens_variable:
-                    self._variables[b.input_tokens_variable] = exec_result.input_tokens
-                if b.output_tokens_variable:
-                    self._variables[b.output_tokens_variable] = exec_result.output_tokens
-                if b.cache_creation_tokens_variable:
-                    self._variables[b.cache_creation_tokens_variable] = (
-                        exec_result.cache_creation_tokens
-                    )
-                if b.cache_read_tokens_variable:
-                    self._variables[b.cache_read_tokens_variable] = (
-                        exec_result.cache_read_tokens
-                    )
+                for var_name, value in (
+                    (b.exit_code_variable, exec_result.exit_code),
+                    (b.cost_variable, exec_result.cost_usd),
+                    (b.duration_variable, exec_result.duration_ms),
+                    (b.input_tokens_variable, exec_result.input_tokens),
+                    (b.output_tokens_variable, exec_result.output_tokens),
+                    (b.cache_creation_tokens_variable, exec_result.cache_creation_tokens),
+                    (b.cache_read_tokens_variable, exec_result.cache_read_tokens),
+                ):
+                    if var_name:
+                        key = evaluate_template(var_name, self._variables)
+                        self._variables[key] = value
 
             # Clean up the spawned session
             spawned_session = self._spawned_sessions.get(agent_name)

@@ -325,3 +325,47 @@ class TestAllMetricsIndependent:
         assert result.variables["cr_1"] == _CHILD_TOKENS.cache_read_tokens
         assert isinstance(result.variables["dur_1"], int)
         assert result.variables["dur_1"] >= 0
+
+
+class TestTemplatedVariableNames:
+    async def test_metric_variable_names_are_template_evaluated(self):
+        """A spawn's metric variable names resolve {{...}} against variables.
+
+        This is what lets a fan-out give each child a unique target (e.g.
+        ``cost_variable: "cost_{{i}}"``) so distinct children never collide on
+        one variable -- making assignment (not summation) unambiguously right.
+        """
+        spawn = SpawnBlock(
+            id="spawn",
+            name="Spawn",
+            agent_name="cell-1",
+            command_name="child-cmd",
+            cost_variable="cost_{{i}}",
+            duration_variable="dur_{{i}}",
+            input_tokens_variable="in_{{i}}",
+            cache_read_tokens_variable="cr_{{i}}",
+        )
+        wait = WaitBlock(id="wait", name="Wait", wait_for=["cell-1"])
+        fc = _spawn_wait_flowchart(spawn, wait)
+        # {{i}} is 7 in the parent's variables at join time.
+        walker = GraphWalker(
+            fc, _MetricSession(delay_seconds=0.02), {"i": 7}, MockProtocol()
+        )
+
+        mock_cmd = MagicMock()
+        mock_cmd.flowchart = _child_flowchart_prompt()
+        with patch(
+            "flowcoder_engine.walker.resolve_command", return_value=mock_cmd
+        ):
+            result = await walker.run()
+
+        assert result.status == "completed", result
+        # Names resolved via {{i}} -> the child's metrics landed on the
+        # per-index keys...
+        assert result.variables["cost_{{i}}".replace("{{i}}", "7")] == _CHILD_COST
+        assert result.variables["in_7"] == _CHILD_TOKENS.input_tokens
+        assert result.variables["cr_7"] == _CHILD_TOKENS.cache_read_tokens
+        assert result.variables["dur_7"] > 0
+        # ...and NOT on the un-substituted literal template.
+        assert "cost_{{i}}" not in result.variables
+        assert "in_{{i}}" not in result.variables
