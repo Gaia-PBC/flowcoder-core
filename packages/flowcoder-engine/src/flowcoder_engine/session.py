@@ -14,6 +14,7 @@ import os
 import secrets
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Callable, Coroutine
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 log = logging.getLogger(__name__)
@@ -39,10 +40,33 @@ ControlCallback = Callable[
 ]
 
 
+@dataclass(frozen=True)
+class TokenUsage:
+    """Token counts broken out by kind, mirroring the Claude CLI's
+    ``result.usage`` block.
+
+    On a session these are *cumulative* totals.  Unlike ``total_cost_usd``
+    (which the CLI reports cumulatively), the CLI's ``usage`` block is
+    reported *per turn*, so ClaudeSession accumulates it by SUMMING each
+    query's usage rather than taking a delta (see ``_accumulate_usage``).
+    """
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_creation_tokens: int = 0
+    cache_read_tokens: int = 0
+
+
 class QueryResult:
     """Result from a session query."""
 
-    __slots__ = ("cost_usd", "duration_ms", "response_text", "structured_output")
+    __slots__ = (
+        "cost_usd",
+        "duration_ms",
+        "response_text",
+        "structured_output",
+        "token_usage",
+    )
 
     def __init__(
         self,
@@ -50,11 +74,15 @@ class QueryResult:
         structured_output: dict[str, Any] | None = None,
         cost_usd: float = 0.0,
         duration_ms: int = 0,
+        token_usage: TokenUsage | None = None,
     ) -> None:
         self.response_text = response_text
         self.structured_output = structured_output
         self.cost_usd = cost_usd
         self.duration_ms = duration_ms
+        # Per-turn usage for THIS query; the session sums these into its
+        # cumulative ``token_usage``.
+        self.token_usage = token_usage if token_usage is not None else TokenUsage()
 
 
 def _clean_env(overrides: dict[str, str] | None = None) -> dict[str, str]:
@@ -103,6 +131,16 @@ class BaseSession(ABC):
     def total_cost(self) -> float:
         """Cumulative cost in USD across all queries in this session."""
         ...
+
+    @property
+    def token_usage(self) -> TokenUsage:
+        """Cumulative token counts across all queries in this session.
+
+        Concrete (not abstract) with an all-zero default so backends that do
+        not report token usage need no code; ClaudeSession overrides it with
+        real accounting.  Summed per-turn, unlike ``total_cost``.
+        """
+        return TokenUsage()
 
     @property
     @abstractmethod
@@ -199,6 +237,10 @@ class ClaudeSession(BaseSession):
         self._session_id: str | None = None
         self._total_cost: float = 0.0
         self._last_cli_cost: float = 0.0
+        self._total_input_tokens: int = 0
+        self._total_output_tokens: int = 0
+        self._total_cache_creation_tokens: int = 0
+        self._total_cache_read_tokens: int = 0
         self._claude_cmd = claude_cmd
         self._protocol = protocol
         self._control_callback = control_callback
@@ -221,6 +263,35 @@ class ClaudeSession(BaseSession):
     @property
     def total_cost(self) -> float:
         return self._total_cost
+
+    @property
+    def token_usage(self) -> TokenUsage:
+        return TokenUsage(
+            input_tokens=self._total_input_tokens,
+            output_tokens=self._total_output_tokens,
+            cache_creation_tokens=self._total_cache_creation_tokens,
+            cache_read_tokens=self._total_cache_read_tokens,
+        )
+
+    def _accumulate_usage(self, usage: dict[str, Any]) -> TokenUsage:
+        """Add one query result's per-turn token usage to the running totals.
+
+        The CLI's ``result.usage`` reports *this turn's* tokens (verified
+        against real CLI output: the block is per-turn, not cumulative like
+        ``total_cost_usd``), so we SUM across queries rather than diffing.
+        Returns the per-turn usage so the caller can stamp its QueryResult.
+        """
+        turn = TokenUsage(
+            input_tokens=int(usage.get("input_tokens") or 0),
+            output_tokens=int(usage.get("output_tokens") or 0),
+            cache_creation_tokens=int(usage.get("cache_creation_input_tokens") or 0),
+            cache_read_tokens=int(usage.get("cache_read_input_tokens") or 0),
+        )
+        self._total_input_tokens += turn.input_tokens
+        self._total_output_tokens += turn.output_tokens
+        self._total_cache_creation_tokens += turn.cache_creation_tokens
+        self._total_cache_read_tokens += turn.cache_read_tokens
+        return turn
 
     def clone(self, name: str) -> ClaudeSession:
         """Create a new ClaudeSession with the same config but a different name."""
@@ -394,6 +465,7 @@ class ClaudeSession(BaseSession):
                     result.cost_usd = cli_cost - self._last_cli_cost
                     self._last_cli_cost = cli_cost
                     result.duration_ms = data.get("duration_ms", 0)
+                    result.token_usage = self._accumulate_usage(data.get("usage") or {})
                     self._total_cost += result.cost_usd
 
                     if data.get("session_id"):
@@ -458,6 +530,7 @@ class ClaudeSession(BaseSession):
                     cost = cli_cost - self._last_cli_cost
                     self._last_cli_cost = cli_cost
                     self._total_cost += cost
+                    self._accumulate_usage(data.get("usage") or {})
                     if data.get("session_id"):
                         self._session_id = data["session_id"]
                     span.set_attributes({

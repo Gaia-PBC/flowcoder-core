@@ -206,6 +206,11 @@ class TestSpawnBlock:
         assert b.inherit_variables is False
         assert b.exit_code_variable is None
         assert b.cost_variable is None
+        assert b.duration_variable is None
+        assert b.input_tokens_variable is None
+        assert b.output_tokens_variable is None
+        assert b.cache_creation_tokens_variable is None
+        assert b.cache_read_tokens_variable is None
         assert b.config_file is None
 
     def test_defaults(self):
@@ -245,6 +250,26 @@ class TestSpawnBlock:
         assert restored.inherit_variables is True
         assert restored.exit_code_variable == "rc"
         assert restored.cost_variable == "cost"
+
+    def test_roundtrip_metric_variables(self):
+        original = SpawnBlock(
+            id="sp2",
+            name="Spawn",
+            agent_name="cell-1",
+            command_name="tb-cell",
+            duration_variable="dur_1",
+            input_tokens_variable="in_1",
+            output_tokens_variable="out_1",
+            cache_creation_tokens_variable="cc_1",
+            cache_read_tokens_variable="cr_1",
+        )
+        restored = BlockAdapter.validate_python(original.model_dump())
+        assert isinstance(restored, SpawnBlock)
+        assert restored.duration_variable == "dur_1"
+        assert restored.input_tokens_variable == "in_1"
+        assert restored.output_tokens_variable == "out_1"
+        assert restored.cache_creation_tokens_variable == "cc_1"
+        assert restored.cache_read_tokens_variable == "cr_1"
 
 
 class TestWaitBlock:

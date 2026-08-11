@@ -104,6 +104,25 @@ class TestRealSession:
         finally:
             await session.stop()
 
+    async def test_session_tracks_tokens(self):
+        """Session accumulates token_usage (summed per-turn) across queries."""
+        session = _session("test")
+        try:
+            await session.start()
+            await session.query("Reply with the number 1")
+            after_one = session.token_usage
+            # A real reply always spends input and output tokens.
+            assert after_one.input_tokens > 0
+            assert after_one.output_tokens > 0
+
+            await session.query("Reply with the number 2")
+            after_two = session.token_usage
+            # Summed per-turn, so cumulative totals only grow across queries.
+            assert after_two.input_tokens > after_one.input_tokens
+            assert after_two.output_tokens > after_one.output_tokens
+        finally:
+            await session.stop()
+
     async def test_message_forwarding(self):
         """Protocol receives forwarded assistant messages."""
         proto = MockProtocol()

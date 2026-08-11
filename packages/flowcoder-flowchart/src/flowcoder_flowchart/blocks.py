@@ -126,6 +126,11 @@ class SpawnBlock(BlockBase):
     inherit_variables: bool = False
     exit_code_variable: str | None = None
     cost_variable: str | None = None
+    duration_variable: str | None = None
+    input_tokens_variable: str | None = None
+    output_tokens_variable: str | None = None
+    cache_creation_tokens_variable: str | None = None
+    cache_read_tokens_variable: str | None = None
     config_file: str | None = None
     model: str | None = None
     backend: str | None = None

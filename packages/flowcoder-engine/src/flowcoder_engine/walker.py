@@ -91,6 +91,10 @@ class ExecutionResult:
     exit_code: int = 0
     duration_ms: int = 0
     cost_usd: float = 0.0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_creation_tokens: int = 0
+    cache_read_tokens: int = 0
 
 
 _COMPARISON_RE = re.compile(
@@ -293,6 +297,7 @@ class GraphWalker:
                 status = "completed"
 
             run_span.set_attributes({"flowchart.status": status, "flowchart.duration_ms": total_ms})
+            usage = self._session.token_usage
             return ExecutionResult(
                 variables=self._variables,
                 log=self._log,
@@ -300,6 +305,10 @@ class GraphWalker:
                 exit_code=exit_code,
                 duration_ms=total_ms,
                 cost_usd=self._session.total_cost,
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
+                cache_creation_tokens=usage.cache_creation_tokens,
+                cache_read_tokens=usage.cache_read_tokens,
             )
 
     async def _execute_block(self, block: BlockBase) -> BlockResult:
@@ -719,14 +728,32 @@ class GraphWalker:
                 f"Agent '{agent_name}' completed: {exec_result.status}"
             )
 
-            # Store exit code and cost variables from the spawn block
+            # Store per-child metrics (exit code, cost, duration, token
+            # breakdown) into the parent variables named on the matching
+            # spawn block.
             for b in self._flowchart.blocks.values():
-                if isinstance(b, SpawnBlock):
-                    spawn_agent = evaluate_template(b.agent_name, self._variables)
-                    if spawn_agent == agent_name and b.exit_code_variable:
-                        self._variables[b.exit_code_variable] = exec_result.exit_code
-                    if spawn_agent == agent_name and b.cost_variable:
-                        self._variables[b.cost_variable] = exec_result.cost_usd
+                if not isinstance(b, SpawnBlock):
+                    continue
+                if evaluate_template(b.agent_name, self._variables) != agent_name:
+                    continue
+                if b.exit_code_variable:
+                    self._variables[b.exit_code_variable] = exec_result.exit_code
+                if b.cost_variable:
+                    self._variables[b.cost_variable] = exec_result.cost_usd
+                if b.duration_variable:
+                    self._variables[b.duration_variable] = exec_result.duration_ms
+                if b.input_tokens_variable:
+                    self._variables[b.input_tokens_variable] = exec_result.input_tokens
+                if b.output_tokens_variable:
+                    self._variables[b.output_tokens_variable] = exec_result.output_tokens
+                if b.cache_creation_tokens_variable:
+                    self._variables[b.cache_creation_tokens_variable] = (
+                        exec_result.cache_creation_tokens
+                    )
+                if b.cache_read_tokens_variable:
+                    self._variables[b.cache_read_tokens_variable] = (
+                        exec_result.cache_read_tokens
+                    )
 
             # Clean up the spawned session
             spawned_session = self._spawned_sessions.get(agent_name)

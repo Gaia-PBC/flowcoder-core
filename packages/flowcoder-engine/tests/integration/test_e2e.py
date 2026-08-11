@@ -60,7 +60,7 @@ def test_command_roundtrip():
 
 import asyncio
 
-from flowcoder_engine.session import QueryResult
+from flowcoder_engine.session import QueryResult, TokenUsage
 from flowcoder_engine.walker import GraphWalker
 
 
@@ -71,6 +71,7 @@ class _MockSession:
         self.name = "mock"
         self.session_id = "mock"
         self.total_cost = 0.0
+        self.token_usage = TokenUsage()
         self._responses = list(responses or ["OK"])
         self._i = 0
         self._clear_count = 0

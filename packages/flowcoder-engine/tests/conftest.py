@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-from flowcoder_engine.session import BaseSession, QueryResult
+from flowcoder_engine.session import BaseSession, QueryResult, TokenUsage
 from flowcoder_flowchart import (
     BashBlock,
     BranchBlock,
@@ -35,6 +35,7 @@ class MockSession(BaseSession):
         self._name = "mock"
         self._session_id: str | None = session_id
         self._total_cost = 0.0
+        self._token_usage = TokenUsage()
         self._responses = list(responses or ["Mock response"])
         self._call_count = 0
         self._clear_count = 0
@@ -52,6 +53,10 @@ class MockSession(BaseSession):
     @property
     def total_cost(self) -> float:
         return self._total_cost
+
+    @property
+    def token_usage(self) -> TokenUsage:
+        return self._token_usage
 
     @property
     def is_running(self) -> bool:
