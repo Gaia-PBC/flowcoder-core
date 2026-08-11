@@ -125,6 +125,7 @@ class SpawnBlock(BlockBase):
     arguments: str = ""
     inherit_variables: bool = False
     exit_code_variable: str | None = None
+    cost_variable: str | None = None
     config_file: str | None = None
     model: str | None = None
     backend: str | None = None

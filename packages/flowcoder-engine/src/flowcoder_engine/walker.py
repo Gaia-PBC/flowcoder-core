@@ -90,6 +90,7 @@ class ExecutionResult:
     status: str  # "completed" | "halted" | "error" | "exited"
     exit_code: int = 0
     duration_ms: int = 0
+    cost_usd: float = 0.0
 
 
 _COMPARISON_RE = re.compile(
@@ -298,6 +299,7 @@ class GraphWalker:
                 status=status,
                 exit_code=exit_code,
                 duration_ms=total_ms,
+                cost_usd=self._session.total_cost,
             )
 
     async def _execute_block(self, block: BlockBase) -> BlockResult:
@@ -717,12 +719,14 @@ class GraphWalker:
                 f"Agent '{agent_name}' completed: {exec_result.status}"
             )
 
-            # Store exit code variable from the spawn block
+            # Store exit code and cost variables from the spawn block
             for b in self._flowchart.blocks.values():
                 if isinstance(b, SpawnBlock):
                     spawn_agent = evaluate_template(b.agent_name, self._variables)
                     if spawn_agent == agent_name and b.exit_code_variable:
                         self._variables[b.exit_code_variable] = exec_result.exit_code
+                    if spawn_agent == agent_name and b.cost_variable:
+                        self._variables[b.cost_variable] = exec_result.cost_usd
 
             # Clean up the spawned session
             spawned_session = self._spawned_sessions.get(agent_name)

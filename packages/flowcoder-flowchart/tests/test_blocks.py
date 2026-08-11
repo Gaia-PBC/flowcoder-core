@@ -205,6 +205,7 @@ class TestSpawnBlock:
         assert b.model == "haiku"
         assert b.inherit_variables is False
         assert b.exit_code_variable is None
+        assert b.cost_variable is None
         assert b.config_file is None
 
     def test_defaults(self):
@@ -234,6 +235,7 @@ class TestSpawnBlock:
             model="opus",
             inherit_variables=True,
             exit_code_variable="rc",
+            cost_variable="cost",
         )
         data = original.model_dump()
         restored = BlockAdapter.validate_python(data)
@@ -242,6 +244,7 @@ class TestSpawnBlock:
         assert restored.model == "opus"
         assert restored.inherit_variables is True
         assert restored.exit_code_variable == "rc"
+        assert restored.cost_variable == "cost"
 
 
 class TestWaitBlock:
