@@ -114,6 +114,11 @@ class BaseSession(ABC):
     this interface.
     """
 
+    # Cumulative-cost backing shared by every session: ``add_cost`` mutates it
+    # and each impl's ``total_cost`` returns it.  Class-level default so a
+    # session that does not set it in __init__ still supports cost roll-up.
+    _total_cost: float = 0.0
+
     @property
     @abstractmethod
     def name(self) -> str:
@@ -131,6 +136,17 @@ class BaseSession(ABC):
     def total_cost(self) -> float:
         """Cumulative cost in USD across all queries in this session."""
         ...
+
+    def add_cost(self, amount: float) -> None:
+        """Add an externally-incurred cost to this session's cumulative total.
+
+        Every session backs ``total_cost`` with ``_total_cost``; the walker
+        rolls each waited child's cumulative cost up through this single
+        mutator (see ``GraphWalker._exec_wait``) so nested spawn costs
+        aggregate into the parent rather than being lost. Concrete on the
+        interface so every backend shares one cost-mutation path.
+        """
+        self._total_cost += amount
 
     @property
     def token_usage(self) -> TokenUsage:
@@ -474,7 +490,7 @@ class ClaudeSession(BaseSession):
                     self._last_cli_cost = cli_cost
                     result.duration_ms = data.get("duration_ms", 0)
                     result.token_usage = self._accumulate_usage(data.get("usage") or {})
-                    self._total_cost += result.cost_usd
+                    self.add_cost(result.cost_usd)
 
                     if data.get("session_id"):
                         self._session_id = data["session_id"]
@@ -537,7 +553,7 @@ class ClaudeSession(BaseSession):
                     cli_cost = data.get("total_cost_usd", 0.0)
                     cost = cli_cost - self._last_cli_cost
                     self._last_cli_cost = cli_cost
-                    self._total_cost += cost
+                    self.add_cost(cost)
                     self._accumulate_usage(data.get("usage") or {})
                     if data.get("session_id"):
                         self._session_id = data["session_id"]

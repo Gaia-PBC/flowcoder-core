@@ -747,6 +747,16 @@ class GraphWalker:
                 f"Agent '{agent_name}' completed: {exec_result.status}"
             )
 
+            # Roll this child's cumulative cost up into the parent session's
+            # total_cost. Unlike cost_variable (opt-in, observability only),
+            # this always aggregates nested spawn costs, so a wrapper that
+            # spawns a doer (no cost_variable) still reports the doer's cost.
+            # Each child is popped from _spawned_tasks below, so it's rolled up
+            # exactly once; the recursion (each wait level rolls up its own
+            # children) makes a top-level session's cost include deeply-nested
+            # descendants. No double-count.
+            self._session.add_cost(exec_result.cost_usd)
+
             # Store per-child metrics (exit code, cost, duration, token
             # breakdown) into the parent variables named on the matching
             # spawn block.  Each variable NAME is template-evaluated (like

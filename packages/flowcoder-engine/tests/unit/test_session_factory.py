@@ -27,7 +27,7 @@ class StubSession(BaseSession):
 
     @property
     def total_cost(self) -> float:
-        return 0.0
+        return self._total_cost
 
     @property
     def is_running(self) -> bool:
