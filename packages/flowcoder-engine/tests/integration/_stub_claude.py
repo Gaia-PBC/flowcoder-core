@@ -58,6 +58,12 @@ def main() -> None:
                     "num_turns": 1,
                     "duration_ms": 0,
                     "total_cost_usd": 0.0,
+                    "usage": {
+                        "input_tokens": 11,
+                        "output_tokens": 22,
+                        "cache_creation_input_tokens": 33,
+                        "cache_read_input_tokens": 44,
+                    },
                     "session_id": "stub-session",
                 }
             )

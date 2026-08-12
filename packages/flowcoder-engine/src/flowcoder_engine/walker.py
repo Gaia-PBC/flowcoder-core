@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 import shlex
 import time
@@ -90,6 +91,11 @@ class ExecutionResult:
     status: str  # "completed" | "halted" | "error" | "exited"
     exit_code: int = 0
     duration_ms: int = 0
+    cost_usd: float = 0.0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_creation_tokens: int = 0
+    cache_read_tokens: int = 0
 
 
 _COMPARISON_RE = re.compile(
@@ -292,12 +298,18 @@ class GraphWalker:
                 status = "completed"
 
             run_span.set_attributes({"flowchart.status": status, "flowchart.duration_ms": total_ms})
+            usage = self._session.token_usage
             return ExecutionResult(
                 variables=self._variables,
                 log=self._log,
                 status=status,
                 exit_code=exit_code,
                 duration_ms=total_ms,
+                cost_usd=self._session.total_cost,
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
+                cache_creation_tokens=usage.cache_creation_tokens,
+                cache_read_tokens=usage.cache_read_tokens,
             )
 
     async def _execute_block(self, block: BlockBase) -> BlockResult:
@@ -626,23 +638,41 @@ class GraphWalker:
             for i, part in enumerate(parts, 1):
                 child_vars[f"${i}"] = part
 
+        # Optional per-spawn working directory: template it (so it can use
+        # {{var}}/$N), create it, and hand it to the child so parallel siblings
+        # can be isolated on disk.  Unset -> None -> child inherits parent cwd.
+        spawn_cwd: str | None = None
+        if block.cwd:
+            spawn_cwd = evaluate_template(block.cwd, self._variables)
+            os.makedirs(spawn_cwd, exist_ok=True)
+
         if block.backend and self._session_factory:
+            # NOTE: the backend path builds via SessionCreator(name, model),
+            # which has no cwd parameter, so block.cwd is not honored here yet.
+            # Follow-up: thread cwd through SessionFactory.create / SessionCreator.
             child_session = self._session_factory.create(
                 block.backend, agent_name, resolved_model
             )
+            if spawn_cwd is not None:
+                self._protocol.log(
+                    f"Note: per-spawn cwd is not applied to backend-spawned "
+                    f"agent '{agent_name}' (backend factory has no cwd param)"
+                )
             self._protocol.log(
                 f"Spawning agent '{agent_name}' with backend '{block.backend}'"
                 f"{f' model {resolved_model!r}' if resolved_model else ''} "
                 f"running command '{command_name}'"
             )
         elif resolved_model:
-            child_session = self._session.with_model(resolved_model).clone(agent_name)
+            child_session = self._session.with_model(resolved_model).clone(
+                agent_name, cwd=spawn_cwd
+            )
             self._protocol.log(
                 f"Spawning agent '{agent_name}' with model '{resolved_model}' "
                 f"running command '{command_name}'"
             )
         else:
-            child_session = self._session.clone(agent_name)
+            child_session = self._session.clone(agent_name, cwd=spawn_cwd)
             self._protocol.log(
                 f"Spawning agent '{agent_name}' running command '{command_name}'"
             )
@@ -717,12 +747,39 @@ class GraphWalker:
                 f"Agent '{agent_name}' completed: {exec_result.status}"
             )
 
-            # Store exit code variable from the spawn block
+            # Roll this child's cumulative cost up into the parent session's
+            # total_cost. Unlike cost_variable (opt-in, observability only),
+            # this always aggregates nested spawn costs, so a wrapper that
+            # spawns a doer (no cost_variable) still reports the doer's cost.
+            # Each child is popped from _spawned_tasks below, so it's rolled up
+            # exactly once; the recursion (each wait level rolls up its own
+            # children) makes a top-level session's cost include deeply-nested
+            # descendants. No double-count.
+            self._session.add_cost(exec_result.cost_usd)
+
+            # Store per-child metrics (exit code, cost, duration, token
+            # breakdown) into the parent variables named on the matching
+            # spawn block.  Each variable NAME is template-evaluated (like
+            # agent_name), so a fan-out can target a unique variable per child,
+            # e.g. cost_variable: "cost_{{i}}" -> cost_1, cost_2, ...  A literal
+            # name (no {{...}}) passes through unchanged.
             for b in self._flowchart.blocks.values():
-                if isinstance(b, SpawnBlock):
-                    spawn_agent = evaluate_template(b.agent_name, self._variables)
-                    if spawn_agent == agent_name and b.exit_code_variable:
-                        self._variables[b.exit_code_variable] = exec_result.exit_code
+                if not isinstance(b, SpawnBlock):
+                    continue
+                if evaluate_template(b.agent_name, self._variables) != agent_name:
+                    continue
+                for var_name, value in (
+                    (b.exit_code_variable, exec_result.exit_code),
+                    (b.cost_variable, exec_result.cost_usd),
+                    (b.duration_variable, exec_result.duration_ms),
+                    (b.input_tokens_variable, exec_result.input_tokens),
+                    (b.output_tokens_variable, exec_result.output_tokens),
+                    (b.cache_creation_tokens_variable, exec_result.cache_creation_tokens),
+                    (b.cache_read_tokens_variable, exec_result.cache_read_tokens),
+                ):
+                    if var_name:
+                        key = evaluate_template(var_name, self._variables)
+                        self._variables[key] = value
 
             # Clean up the spawned session
             spawned_session = self._spawned_sessions.get(agent_name)
