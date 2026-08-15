@@ -9,6 +9,34 @@ from flowcoder_engine.session import ClaudeSession as Session, _clean_env, _stri
 from tests.conftest import MockProtocol
 
 
+class TestWithEnv:
+    def test_with_env_merges_overrides(self):
+        proto = MockProtocol()
+        original = Session(
+            name="main",
+            claude_cmd=["claude"],
+            protocol=proto,
+            env_overrides={"ANTHROPIC_BASE_URL": "http://parent"},
+        )
+        child = original.with_env({"ANTHROPIC_BASE_URL": "http://child", "ANTHROPIC_MODEL": "m1"})
+        assert child._env_overrides == {
+            "ANTHROPIC_BASE_URL": "http://child",
+            "ANTHROPIC_MODEL": "m1",
+        }
+        # Original untouched
+        assert original._env_overrides == {"ANTHROPIC_BASE_URL": "http://parent"}
+
+    def test_with_env_on_no_overrides(self):
+        original = Session(name="main", claude_cmd=["claude"])
+        child = original.with_env({"ANTHROPIC_MODEL": "m1"})
+        assert child._env_overrides == {"ANTHROPIC_MODEL": "m1"}
+
+    def test_clean_env_applies_overrides(self):
+        env = _clean_env({"ANTHROPIC_BASE_URL": "http://x"})
+        assert env["ANTHROPIC_BASE_URL"] == "http://x"
+        assert env["CLAUDE_CODE_ENTRYPOINT"] == "sdk-py"
+
+
 class TestClone:
     def test_clone_preserves_config(self):
         proto = MockProtocol()

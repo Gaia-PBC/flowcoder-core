@@ -56,7 +56,7 @@ class StubSession(BaseSession):
 class TestSessionFactory:
     def test_register_and_create(self):
         factory = SessionFactory()
-        factory.register("test", lambda name, model: StubSession(name, "test", model))
+        factory.register("test", lambda name, model, env=None: StubSession(name, "test", model))
         session = factory.create("test", "agent-1")
         assert isinstance(session, StubSession)
         assert session.name == "agent-1"
@@ -64,9 +64,21 @@ class TestSessionFactory:
 
     def test_create_with_model(self):
         factory = SessionFactory()
-        factory.register("test", lambda name, model: StubSession(name, "test", model))
+        factory.register("test", lambda name, model, env=None: StubSession(name, "test", model))
         session = factory.create("test", "agent-1", model="gpt-5")
         assert session._model == "gpt-5"
+
+    def test_create_with_env(self):
+        factory = SessionFactory()
+        captured = {}
+
+        def creator(name, model, env=None):
+            captured["env"] = env
+            return StubSession(name, "test", model)
+
+        factory.register("test", creator)
+        factory.create("test", "agent-1", env={"ANTHROPIC_BASE_URL": "http://x"})
+        assert captured["env"] == {"ANTHROPIC_BASE_URL": "http://x"}
 
     def test_unknown_backend_raises(self):
         factory = SessionFactory()
@@ -81,8 +93,8 @@ class TestSessionFactory:
 
     def test_multiple_backends(self):
         factory = SessionFactory()
-        factory.register("claude", lambda n, m: StubSession(n, "claude", m))
-        factory.register("codex", lambda n, m: StubSession(n, "codex", m))
+        factory.register("claude", lambda n, m, env=None: StubSession(n, "claude", m))
+        factory.register("codex", lambda n, m, env=None: StubSession(n, "codex", m))
 
         s1 = factory.create("claude", "agent-claude")
         s2 = factory.create("codex", "agent-codex")
@@ -127,6 +139,7 @@ class TestCrossBackendSpawn:
                     "agent_name": "worker",
                     "command_name": "test-cmd",
                     "backend": "codex",
+                    "env": {"ANTHROPIC_BASE_URL": "http://localhost:8199"},
                 },
                 "wait": {
                     "id": "wait",
@@ -151,8 +164,9 @@ class TestCrossBackendSpawn:
         factory = SessionFactory()
         created_sessions = []
 
-        def create_codex(name, model):
+        def create_codex(name, model, env=None):
             s = StubSession(name, "codex", model)
+            s._spawn_env = env
             created_sessions.append(s)
             return s
 
@@ -177,3 +191,4 @@ class TestCrossBackendSpawn:
         assert len(created_sessions) == 1
         assert created_sessions[0]._backend == "codex"
         assert created_sessions[0].name == "worker"
+        assert created_sessions[0]._spawn_env == {"ANTHROPIC_BASE_URL": "http://localhost:8199"}

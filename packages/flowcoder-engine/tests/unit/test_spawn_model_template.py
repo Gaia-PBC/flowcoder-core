@@ -113,7 +113,7 @@ class TestSpawnModelTemplateResolved:
 
         created: list[tuple[str, str | None]] = []
 
-        def _create(name, model):
+        def _create(name, model, env=None):
             created.append((name, model))
             return MockSession()
 

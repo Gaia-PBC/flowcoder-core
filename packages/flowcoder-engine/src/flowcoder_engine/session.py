@@ -348,6 +348,25 @@ class ClaudeSession(BaseSession):
             read_timeout=self._read_timeout,
         )
 
+    def with_env(self, env: dict[str, str]) -> ClaudeSession:
+        """Return a new ClaudeSession with env overrides merged in.
+
+        The child's overrides win over the parent's (e.g. a spawn block's
+        ANTHROPIC_BASE_URL/ANTHROPIC_MODEL routing a child to a different
+        provider than the parent engine).
+        """
+        merged = dict(self._env_overrides) if self._env_overrides else {}
+        merged.update(env)
+        return ClaudeSession(
+            name=self._name,
+            claude_cmd=list(self._claude_cmd),
+            protocol=self._protocol,
+            control_callback=self._control_callback,
+            env_overrides=merged,
+            cwd=self._cwd,
+            read_timeout=self._read_timeout,
+        )
+
     async def set_permission_mode(self, mode: str) -> None:
         """Change the permission mode on the running Claude CLI subprocess."""
         if self._process is None or not self._process.is_running:

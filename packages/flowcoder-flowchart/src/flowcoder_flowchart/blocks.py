@@ -135,6 +135,7 @@ class SpawnBlock(BlockBase):
     model: str | None = None
     backend: str | None = None
     cwd: str | None = None
+    env: dict[str, str] | None = None
 
 
 class WaitBlock(BlockBase):
