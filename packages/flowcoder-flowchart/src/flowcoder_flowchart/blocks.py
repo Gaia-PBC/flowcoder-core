@@ -160,11 +160,20 @@ class ExitBlock(BlockBase):
 
 
 class InputBlock(BlockBase):
-    """Pause the flowchart, accept user input, send to the agent session."""
+    """Pause the flowchart and accept user input.
+
+    The input is sent on to the agent session unless ``send_to_agent`` is
+    false, in which case the block only collects it.
+    """
 
     type: Literal[BlockType.INPUT] = BlockType.INPUT
     output_variable: str | None = None
     input_variable: str | None = None
+    # Whether to forward the collected text to the agent.  False means the
+    # flowchart wanted the text, not an agent turn: pair it with
+    # input_variable and send the text later from a prompt block, if at all.
+    # Defaults true so existing input blocks are unaffected.
+    send_to_agent: bool = True
 
 
 Block = Annotated[

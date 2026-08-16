@@ -838,7 +838,7 @@ class GraphWalker:
         return BlockResult.exit(code=block.exit_code, message=message)
 
     async def _exec_input(self, block: InputBlock) -> BlockResult:
-        """Pause and wait for user input, send to agent, optionally capture response."""
+        """Pause for user input, send it to the agent unless the block opts out."""
         self._protocol.log(f"Input block '{block.name}': waiting for user input")
         self._protocol.emit_system(
             "input_request",
@@ -887,6 +887,24 @@ class GraphWalker:
             for pending in buffered:
                 self._protocol.push_message(pending)
 
+        # Capture the user's own text the moment it arrives, before the agent is
+        # involved at all.  This used to sit after the query, which contradicted
+        # its own comment and lost the input whenever the agent call failed --
+        # on exactly the paths below that report the agent dying.
+        if block.input_variable:
+            self._variables[block.input_variable] = user_text
+
+        # send_to_agent=False: the flowchart wanted the text, not an agent turn.
+        # Return without querying, so asking the user something and branching on
+        # it costs no turn and the agent never sees input meant for the
+        # flowchart.  A later prompt block can send it via {{input_variable}}.
+        if not block.send_to_agent:
+            self._protocol.log(
+                f"Input block '{block.name}': captured input without "
+                f"sending it to the agent"
+            )
+            return BlockResult.ok(output=user_text)
+
         if not user_text:
             self._protocol.log(f"Input block '{block.name}': received empty input")
             return BlockResult.ok(output="")
@@ -912,11 +930,6 @@ class GraphWalker:
                 f"Input block '{block.name}': interrupted while "
                 f"waiting for the agent"
             )
-
-        # Capture the user's own input before sending it to the agent, so
-        # downstream blocks can reference what the user actually said.
-        if block.input_variable:
-            self._variables[block.input_variable] = user_text
 
         if block.output_variable and result.response_text:
             self._variables[block.output_variable] = result.response_text
