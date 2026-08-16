@@ -24,19 +24,12 @@ if TYPE_CHECKING:
 SDK_VERSION = "0.1.39"
 
 
-def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    """Parse CLI arguments.
+def add_engine_args(parser: argparse.ArgumentParser) -> None:
+    """Add the flags that configure the engine itself (not inner Claude).
 
-    Engine-specific flags and common Claude settings are parsed explicitly.
-    All remaining arguments are collected in args.passthrough and forwarded
-    to the inner claude process as-is.
+    Shared by the ``flowcoder-engine`` proxy and the ``flowcoder`` runner so
+    both accept the same command-resolution flags.
     """
-    parser = argparse.ArgumentParser(
-        prog="flowcoder-engine",
-        description="Claude CLI proxy with flowchart execution",
-    )
-
-    # --- Engine-specific flags ---
     parser.add_argument(
         "--claude-path",
         help="Path to the claude CLI binary (auto-detected if not specified)",
@@ -51,13 +44,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--max-blocks",
         type=int,
         default=1000,
-        help="Maximum number of blocks to execute per flowchart (safety limit)",
+        help=(
+            "Maximum number of blocks to execute per flowchart (safety limit); "
+            "0 or less disables it, for a deliberately unbounded flowchart"
+        ),
     )
 
-    # --- Claude settings (forwarded to inner claude) ---
-    # These provide a clean interface for SDK users who don't want to know
-    # raw Claude CLI flags. All are optional — passthrough still works for
-    # anything not covered here.
+
+def add_claude_args(parser: argparse.ArgumentParser) -> None:
+    """Add the Claude settings that ``build_inner_claude_cmd`` consumes.
+
+    These provide a clean interface for callers who don't want to know raw
+    Claude CLI flags.  All are optional.  Every flag added here is read by
+    ``build_inner_claude_cmd``/``build_inner_env``, so any parser that feeds
+    those functions must call this to have the attributes defined.
+    """
     parser.add_argument(
         "--model",
         help="Model to use for the inner Claude process (e.g. sonnet, opus, haiku)",
@@ -107,6 +108,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         dest="allowed_tools",
         help="Comma-separated list of tools to allow",
     )
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Parse CLI arguments.
+
+    Engine-specific flags and common Claude settings are parsed explicitly.
+    All remaining arguments are collected in args.passthrough and forwarded
+    to the inner claude process as-is.
+    """
+    parser = argparse.ArgumentParser(
+        prog="flowcoder-engine",
+        description="Claude CLI proxy with flowchart execution",
+    )
+
+    add_engine_args(parser)
+    add_claude_args(parser)
+
     # Accepted but inert: the inner CLI is always run with --verbose,
     # because -p plus --output-format stream-json requires it (see
     # build_inner_claude_cmd).  The flag is kept so that a host passing

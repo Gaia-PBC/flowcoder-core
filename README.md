@@ -16,7 +16,7 @@ The tkinter GUI that used to live here now has its own repo:
 | Package | Purpose |
 |---|---|
 | `packages/flowcoder-flowchart` | Pure pydantic data models — blocks, connections, commands. No I/O. |
-| `packages/flowcoder-engine` | Execution engine, CLI proxy, stream-json protocol, graph walker. |
+| `packages/flowcoder-engine` | Execution engine, CLI proxy, stream-json protocol, graph walker, terminal runner. |
 
 `flowcoder-engine` depends on `flowcoder-flowchart`. Nothing depends on the GUI.
 
@@ -47,17 +47,70 @@ Pin a `rev` for reproducible builds.
 
 ## Usage
 
+Two entry points ship with `flowcoder-engine`. Use `flowcoder` to run a
+flowchart yourself; use `flowcoder-engine` to embed the engine in a host
+framework.
+
+### `flowcoder` — run a command in the terminal
+
+```bash
+uv run flowcoder <command> [arguments...]
+```
+
+```bash
+uv run flowcoder --list                                  # what can I run?
+uv run flowcoder ex0-design-doc "a CSV to JSON converter"
+uv run flowcoder --search-path ./commands --model sonnet mycommand "an argument"
+uv run flowcoder --json mycommand > result.json          # final variables, machine-readable
+```
+
+Block progress and the agent's replies stream to the terminal as the flowchart
+runs; `input` blocks read a line from stdin. The exit code is 0 when the
+flowchart completes, the block's own code when an `exit` block ends the run, and
+1 otherwise.
+
+Flags go **before** the command name — everything after it is passed to the
+flowchart as `$1`, `$2`, … so a flowchart argument that looks like a flag stays
+an argument.
+
+| Flag | Purpose |
+|---|---|
+| `--list`, `-l` | List resolvable commands and exit |
+| `--json` | Print the final variables as JSON on stdout (progress moves to stderr) |
+| `--verbose`, `-v` | Show engine logs, per-block completions and raw events |
+| `--yes`, `-y` | Auto-allow tool permission requests instead of asking |
+| `--no-color` | Disable ANSI colour |
+
+Sessions run with `--permission-mode bypassPermissions` by default, since
+flowcharts are meant to run unattended. Pass `--permission-mode default` (or
+`plan`) and each tool call that needs approval is asked on the terminal —
+`[y]es`, `[n]o`, or `[a]lways` to stop asking for that tool. `--yes` allows
+everything without asking.
+
+> Only `flowcoder` prompts. The `flowcoder-engine` proxy leaves permission
+> handling to its host, and Claude denies un-approved tools when neither is
+> wired up.
+
+### `flowcoder-engine` — the stream-json proxy
+
 ```bash
 uv run flowcoder-engine [options]
 ```
 
-Run `uv run flowcoder-engine --help` for the full list. Commonly used:
+This is the embeddable entry point: it reads JSON messages on stdin and writes
+them on stdout, so it expects a host framework on the other end rather than a
+person.
+
+### Shared flags
+
+Both accept the same engine and Claude settings; run either with `--help` for
+the full list. Commonly used:
 
 | Flag | Purpose |
 |---|---|
 | `--claude-path` | Path to the `claude` binary (auto-detected if omitted) |
 | `--search-path` | Extra directory to resolve flowchart commands from (repeatable) |
-| `--max-blocks` | Safety limit on blocks executed per flowchart |
+| `--max-blocks` | Safety limit on blocks executed per flowchart (default 1000; `0` or less runs unlimited) |
 | `--model` | Model for the inner Claude process (e.g. `sonnet`, `opus`, `haiku`) |
 | `--permission-mode` | `default`, `plan`, or `bypassPermissions` |
 | `--cwd` | Working directory for the inner Claude process |
@@ -65,7 +118,8 @@ Run `uv run flowcoder-engine --help` for the full list. Commonly used:
 
 ## Command resolution
 
-A slash command `/name` resolves to `name.json`, searched in this order
+A command `name` (written `/name` in a proxied message, and either way on the
+`flowcoder` command line) resolves to `name.json`, searched in this order
 (`resolver.py`):
 
 1. `./commands/name.json`, then `./name.json`
@@ -73,6 +127,13 @@ A slash command `/name` resolves to `name.json`, searched in this order
 3. `~/.flowcoder/commands/name.json`
 
 First match wins; `CommandNotFoundError` if none.
+
+A `spawn` block may set `search_path` to aim one spawn at a specific flowchart —
+a bundle's own, say, which the parent's search paths need not cover. That path
+is searched *before* step 1, so a same-named file under the working directory or
+in a `--search-path` cannot silently capture the spawn. The spawned child
+inherits it at the same precedence, so its own `command` blocks resolve there
+too. Templates (`{{var}}`, `$1`) are substituted first.
 
 ## Flowchart format
 

@@ -10,6 +10,7 @@ dependencies = [
 
 [project.scripts]
 flowcoder-engine = "flowcoder_engine.__main__:main_sync"
+flowcoder = "flowcoder_engine.runner:main"
 
 [project.optional-dependencies]
 dev = [

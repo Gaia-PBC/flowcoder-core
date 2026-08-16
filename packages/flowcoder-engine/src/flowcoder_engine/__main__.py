@@ -484,7 +484,9 @@ async def _run_flowchart_takeover(
             span.set_status(trace.StatusCode.ERROR, str(e))
             return
 
-        protocol.emit_flowchart_start(cmd_name, cmd_args, block_count)
+        protocol.emit_flowchart_start(
+            cmd_name, cmd_args, block_count, session=session.name
+        )
 
         walker = GraphWalker(
             cmd.flowchart,
@@ -516,6 +518,7 @@ async def _run_flowchart_takeover(
                 cost_usd=flowchart_cost,
                 blocks_executed=len(result.log),
                 session_id=session.session_id or "",
+                session=session.name,
             )
 
             protocol.emit_result(
@@ -533,6 +536,7 @@ async def _run_flowchart_takeover(
             protocol.emit_flowchart_complete(
                 status="error", duration_ms=duration_ms,
                 session_id=session.session_id or "",
+                session=session.name,
             )
             protocol.emit_result(
                 str(e), is_error=True,
@@ -545,6 +549,7 @@ async def _run_flowchart_takeover(
             protocol.emit_flowchart_complete(
                 status="error", duration_ms=duration_ms,
                 session_id=session.session_id or "",
+                session=session.name,
             )
             protocol.emit_result(
                 f"Unexpected error: {e}", is_error=True,
