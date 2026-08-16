@@ -158,6 +158,7 @@ class InputBlock(BlockBase):
 
     type: Literal[BlockType.INPUT] = BlockType.INPUT
     output_variable: str | None = None
+    input_variable: str | None = None
 
 
 Block = Annotated[

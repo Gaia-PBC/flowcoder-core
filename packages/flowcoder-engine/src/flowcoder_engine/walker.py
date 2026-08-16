@@ -881,6 +881,11 @@ class GraphWalker:
                 f"waiting for the agent"
             )
 
+        # Capture the user's own input before sending it to the agent, so
+        # downstream blocks can reference what the user actually said.
+        if block.input_variable:
+            self._variables[block.input_variable] = user_text
+
         if block.output_variable and result.response_text:
             self._variables[block.output_variable] = result.response_text
 
