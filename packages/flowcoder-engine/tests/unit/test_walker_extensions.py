@@ -200,6 +200,122 @@ class TestInputBlock:
         result = await walker.run()
         assert result.status == "completed"
 
+    async def test_input_captures_user_input_variable(self, mock_session, mock_protocol):
+        """input_variable stores the user's raw text, not the agent's reply."""
+        fc = Flowchart(
+            blocks={
+                "s": StartBlock(id="s"),
+                "i": InputBlock(id="i", name="Ask", input_variable="user_text"),
+                "e": EndBlock(id="e"),
+            },
+            connections=[
+                Connection(source_id="s", target_id="i"),
+                Connection(source_id="i", target_id="e"),
+            ],
+        )
+
+        class InboxProtocol(MockProtocol):
+            def __init__(self):
+                super().__init__()
+                self._inbox: asyncio.Queue[dict] = asyncio.Queue()
+                self._inbox.put_nowait(
+                    {"type": "input_response", "block_id": "i", "content": "user says hi"}
+                )
+
+            async def read_message(self):
+                return await self._inbox.get()
+
+            def push_message(self, msg):
+                self._inbox.put_nowait(msg)
+
+        proto = InboxProtocol()
+        walker = GraphWalker(fc, mock_session, {}, proto)
+        result = await walker.run()
+        assert result.status == "completed"
+        assert result.variables.get("user_text") == "user says hi"
+
+    async def test_input_variable_absent_when_unconfigured(self, mock_session, mock_protocol):
+        """Without input_variable, no input variable is written."""
+        fc = Flowchart(
+            blocks={
+                "s": StartBlock(id="s"),
+                "i": InputBlock(id="i", name="Ask"),
+                "e": EndBlock(id="e"),
+            },
+            connections=[
+                Connection(source_id="s", target_id="i"),
+                Connection(source_id="i", target_id="e"),
+            ],
+        )
+
+        class InboxProtocol(MockProtocol):
+            def __init__(self):
+                super().__init__()
+                self._inbox: asyncio.Queue[dict] = asyncio.Queue()
+                self._inbox.put_nowait(
+                    {"type": "input_response", "block_id": "i", "content": "hello"}
+                )
+
+            async def read_message(self):
+                return await self._inbox.get()
+
+            def push_message(self, msg):
+                self._inbox.put_nowait(msg)
+
+        proto = InboxProtocol()
+        walker = GraphWalker(fc, mock_session, {}, proto)
+        result = await walker.run()
+        assert result.status == "completed"
+        assert "user_text" not in result.variables
+
+    async def test_input_and_output_variables_coexist(self, mock_session, mock_protocol):
+        """input_variable and output_variable can both be set on one block."""
+        fc = Flowchart(
+            blocks={
+                "s": StartBlock(id="s"),
+                "i": InputBlock(
+                    id="i",
+                    name="Ask",
+                    input_variable="user_text",
+                    output_variable="agent_reply",
+                ),
+                "e": EndBlock(id="e"),
+            },
+            connections=[
+                Connection(source_id="s", target_id="i"),
+                Connection(source_id="i", target_id="e"),
+            ],
+        )
+
+        class InboxProtocol(MockProtocol):
+            def __init__(self):
+                super().__init__()
+                self._inbox: asyncio.Queue[dict] = asyncio.Queue()
+                self._inbox.put_nowait(
+                    {"type": "input_response", "block_id": "i", "content": "user says hi"}
+                )
+
+            async def read_message(self):
+                return await self._inbox.get()
+
+            def push_message(self, msg):
+                self._inbox.put_nowait(msg)
+
+        proto = InboxProtocol()
+        walker = GraphWalker(fc, mock_session, {}, proto)
+        result = await walker.run()
+        assert result.status == "completed"
+        assert result.variables.get("user_text") == "user says hi"
+        assert result.variables.get("agent_reply") == "Mock response"
+
+    def test_input_variable_round_trips_through_json(self):
+        """input_variable survives command-JSON parsing via Pydantic."""
+        block = InputBlock.model_validate(
+            {"id": "i", "name": "Ask", "input_variable": "user_text"}
+        )
+        assert block.input_variable == "user_text"
+        assert block.model_dump()["input_variable"] == "user_text"
+
     async def test_input_read_timeout_reports_block_timeout(self, mock_protocol):
         """An idle CLI during an input block must fail the block, not raise.
 
