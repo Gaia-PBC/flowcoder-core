@@ -125,3 +125,46 @@ class TestBuildVariables:
         assert result["first"] == "a"
         assert result["$2"] == "b"
         assert result["$3"] == "c"
+
+
+class TestAnswerJsonSchema:
+    """`--json-schema` names the shape of the flowchart's FINAL answer.
+
+    It must never reach the inner CLI. The inner command is built once and
+    reused for every block (session.py), so a CLI-level --json-schema would
+    constrain every turn -- including control blocks that carry their own
+    `output_schema`. Observed in production: a host passed a task schema of
+    {digits, count}; the CLASSIFY block's {isTask, hasRefTopics, refFiles}
+    was replaced by it, `isTask` was never set, the branch went falsy, and
+    the entire task path was skipped. The flowchart silently stopped doing
+    the work it was asked to do.
+    """
+
+    SCHEMA = '{"type":"object","properties":{"digits":{"type":"string"}}}'
+
+    def test_schema_is_parsed_as_a_first_class_flag(self):
+        args = parse_args(["--json-schema", self.SCHEMA])
+        assert args.json_schema == self.SCHEMA
+
+    def test_schema_does_not_leak_into_passthrough(self):
+        """Passthrough is appended verbatim to the inner command."""
+        args = parse_args(["--json-schema", self.SCHEMA])
+        assert "--json-schema" not in args.passthrough
+
+    def test_schema_never_reaches_the_inner_cli(self):
+        cmd = build_inner_claude_cmd(
+            parse_args(["--json-schema", self.SCHEMA]), "/usr/bin/claude"
+        )
+        assert "--json-schema" not in cmd, (
+            "a session-wide schema overrides every block's own output_schema"
+        )
+        assert self.SCHEMA not in cmd
+
+    def test_absent_by_default(self):
+        assert parse_args([]).json_schema is None
+
+    def test_other_passthrough_flags_still_pass_through(self):
+        """Narrow fix: only --json-schema is intercepted."""
+        args = parse_args(["--json-schema", self.SCHEMA, "--some-future-flag", "x"])
+        cmd = build_inner_claude_cmd(args, "/usr/bin/claude")
+        assert "--some-future-flag" in cmd and "x" in cmd

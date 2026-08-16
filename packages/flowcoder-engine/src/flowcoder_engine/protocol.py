@@ -284,22 +284,37 @@ class ProtocolHandler:
         num_turns: int = 0,
         total_cost_usd: float = 0.0,
         session_id: str = "flowchart",
+        structured_output: dict[str, Any] | None = None,
     ) -> None:
-        """Emit a result message (turn completion)."""
-        self.emit(
-            {
-                "type": "result",
-                "subtype": "error" if is_error else "success",
-                "uuid": uuid.uuid4().hex,
-                "session_id": session_id,
-                "duration_ms": duration_ms,
-                "duration_api_ms": 0,
-                "is_error": is_error,
-                "num_turns": num_turns,
-                "total_cost_usd": total_cost_usd,
-                "result": result_text,
-            }
-        )
+        """Emit a result message (turn completion).
+
+        `structured_output` carries the flowchart's final answer as a parsed
+        object, matching the field name `claude -p --json-schema` uses, so a
+        host can read it the same way whether or not the engine is in the
+        loop. Omitted entirely when absent rather than emitted as null: every
+        existing host already parses this event, and an unconditional new key
+        is a change to a message they all read.
+
+        Without this the field had nowhere to go. `result` is a JSON dump of
+        the flowchart's variables, so hosts wanting a structured answer had
+        to re-parse that string -- and got whichever control block wrote last
+        rather than the final response.
+        """
+        payload = {
+            "type": "result",
+            "subtype": "error" if is_error else "success",
+            "uuid": uuid.uuid4().hex,
+            "session_id": session_id,
+            "duration_ms": duration_ms,
+            "duration_api_ms": 0,
+            "is_error": is_error,
+            "num_turns": num_turns,
+            "total_cost_usd": total_cost_usd,
+            "result": result_text,
+        }
+        if structured_output is not None:
+            payload["structured_output"] = structured_output
+        self.emit(payload)
 
     def emit_forwarded(
         self,

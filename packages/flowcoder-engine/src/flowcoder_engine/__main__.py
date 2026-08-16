@@ -47,6 +47,7 @@ except ImportError:
     _HAS_OTEL_SDK = False
 
 from .cli import build_inner_claude_cmd, build_inner_env, build_variables, parse_args
+from .json_parser import parse_json_from_response
 from .protocol import ProtocolHandler
 from .resolver import CommandNotFoundError, resolve_command
 from .session import BaseSession, ClaudeSession
@@ -448,6 +449,49 @@ async def _pump_router_to_inbox(
         protocol.push_message(msg)
 
 
+#: Asks for a restatement, never a recomputation. Recomputing would double
+#: the cost of the task and could yield a DIFFERENT answer from the one the
+#: flowchart actually produced -- and that one is what the caller measured.
+_STRUCTURED_ANSWER_PROMPT = (
+    "Restate the final answer you have already given, as JSON matching this "
+    "schema. Use only what is already in this conversation -- do not redo the "
+    "work, do not recompute anything, and do not change the answer. Reply "
+    "with the JSON object and nothing else.\n\n"
+    "```json\n{schema}\n```"
+)
+
+
+async def query_structured_answer(
+    session: Any, json_schema: str | None
+) -> dict[str, Any] | None:
+    """Ask once, after the flowchart is done, for its answer in a given shape.
+
+    This is where `--json-schema` is applied, and it is deliberately not the
+    inner CLI. The inner command is built once and reused for every block
+    (`session.py`), so a CLI-level schema constrains every turn: in production
+    a task schema of `{digits, count}` replaced the CLASSIFY block's
+    `{isTask, hasRefTopics, refFiles}`, `isTask` was never set, the branch
+    went falsy, and the whole task path was skipped. Applying the schema once
+    at the end leaves every block's own `output_schema` intact.
+
+    Returns None rather than raising, always. This runs AFTER the flowchart
+    has succeeded: losing the structured answer costs a field, whereas
+    letting this failure escape would destroy completed work.
+    """
+    if not json_schema:
+        return None
+    try:
+        result = await session.query(
+            _STRUCTURED_ANSWER_PROMPT.format(schema=json_schema),
+            block_id="__structured_answer__",
+            block_name="structured answer",
+        )
+        parsed = parse_json_from_response(result.response_text or "")
+    except Exception:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
 async def _run_flowchart_takeover(
     session: BaseSession,
     cmd: fc_lib.Command,
@@ -521,6 +565,16 @@ async def _run_flowchart_takeover(
                 session=session.name,
             )
 
+            # Applied here, once, rather than on the inner CLI: a session-wide
+            # schema constrains every block and overrides each one's own
+            # output_schema. Only on a completed flowchart -- asking a failed
+            # run to restate an answer it never reached wastes a turn.
+            structured_output = None
+            if result.status == "completed":
+                structured_output = await query_structured_answer(
+                    session, getattr(args, "json_schema", None)
+                )
+
             protocol.emit_result(
                 json.dumps(result.variables),
                 is_error=result.status != "completed",
@@ -528,6 +582,7 @@ async def _run_flowchart_takeover(
                 num_turns=len(result.log),
                 total_cost_usd=flowchart_cost,
                 session_id=session.session_id or "flowchart",
+                structured_output=structured_output,
             )
             span.set_attributes({"flowchart.status": result.status, "flowchart.duration_ms": duration_ms})
 

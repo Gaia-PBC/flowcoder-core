@@ -289,3 +289,44 @@ class TestInboxQueue:
     def test_busy_flag_default(self):
         p = ProtocolHandler()
         assert p.busy is False
+
+
+class TestResultStructuredOutput:
+    """The terminal result event must be able to carry the flowchart's final
+    answer as a parsed object.
+
+    Without this the field has nowhere to go: `emit_result` built its payload
+    from a fixed key list, so a host that asked for a structured answer got
+    the variable dump in `result` and nothing else. Hosts were left
+    re-parsing that string and picking up whichever control block happened to
+    write last.
+    """
+
+    def test_structured_output_is_emitted_when_given(self):
+        p = ProtocolHandler()
+        captured = io.StringIO()
+        with patch.object(sys, "stdout", captured):
+            p.emit_result("done", structured_output={"digits": "8.185", "count": 4})
+        msg = json.loads(captured.getvalue().strip())
+        assert msg["structured_output"] == {"digits": "8.185", "count": 4}
+
+    def test_absent_when_not_given(self):
+        """Every existing host already parses this event; an unconditional
+        null would be a new key in every message they read."""
+        p = ProtocolHandler()
+        captured = io.StringIO()
+        with patch.object(sys, "stdout", captured):
+            p.emit_result("done")
+        assert "structured_output" not in json.loads(captured.getvalue().strip())
+
+    def test_the_rest_of_the_event_is_unchanged(self):
+        p = ProtocolHandler()
+        captured = io.StringIO()
+        with patch.object(sys, "stdout", captured):
+            p.emit_result("done", is_error=False, duration_ms=500,
+                          structured_output={"a": 1})
+        msg = json.loads(captured.getvalue().strip())
+        assert msg["type"] == "result"
+        assert msg["subtype"] == "success"
+        assert msg["result"] == "done"
+        assert msg["duration_ms"] == 500
