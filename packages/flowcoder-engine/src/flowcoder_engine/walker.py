@@ -242,7 +242,11 @@ class GraphWalker:
                         self._halted = True
                         break
 
-                    if self._blocks_executed >= self._max_blocks:
+                    # max_blocks <= 0 means unlimited: a deliberately unbounded
+                    # orchestrator is not a runaway loop, and it has no other
+                    # way to run past the limit.  Opt-out, not opt-in -- the
+                    # default stays positive so a buggy loop still gets caught.
+                    if 0 < self._max_blocks <= self._blocks_executed:
                         raise ExecutionError(
                             f"Safety limit: exceeded {self._max_blocks} blocks"
                         )

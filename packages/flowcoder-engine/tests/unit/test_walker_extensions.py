@@ -379,7 +379,10 @@ class TestCleanup:
             },
             connections=[Connection(source_id="s", target_id="e")],
         )
-        walker = GraphWalker(fc, mock_session, {}, mock_protocol, max_blocks=0)
+        # max_blocks=1 trips on the second block (the end block), which is all
+        # this test needs -- an error mid-run to prove cleanup still happens.
+        # It used to pass 0 for that; 0 now means unlimited and never raises.
+        walker = GraphWalker(fc, mock_session, {}, mock_protocol, max_blocks=1)
         with pytest.raises(Exception):
             await walker.run()
         # Cleanup should have run (no spawned tasks, but no crash either)

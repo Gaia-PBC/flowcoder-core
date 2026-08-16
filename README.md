@@ -110,7 +110,7 @@ the full list. Commonly used:
 |---|---|
 | `--claude-path` | Path to the `claude` binary (auto-detected if omitted) |
 | `--search-path` | Extra directory to resolve flowchart commands from (repeatable) |
-| `--max-blocks` | Safety limit on blocks executed per flowchart |
+| `--max-blocks` | Safety limit on blocks executed per flowchart (default 1000; `0` or less runs unlimited) |
 | `--model` | Model for the inner Claude process (e.g. `sonnet`, `opus`, `haiku`) |
 | `--permission-mode` | `default`, `plan`, or `bypassPermissions` |
 | `--cwd` | Working directory for the inner Claude process |
