@@ -10,10 +10,26 @@ in the inherited ``search_paths``, would otherwise win *silently*: no error, the
 wrong flowchart just runs.  The two ``TestSearchPathPrecedence`` cases below are
 regressions for exactly those two collisions, on real directories.
 
-Recorded decision — the priority is *inherited*: a spawned child carries it into
-its own ``command`` blocks, so a bundle's orchestrator that delegates to a
-sibling sub-command still gets that bundle's copy rather than a cwd shadow one
-level down.  ``test_priority_is_inherited_by_nested_commands`` pins that.
+The priority is *inherited* as a priority, not flattened into the child's
+ordinary ``search_paths``: a spawned child carries it into its own ``command``
+*and* ``spawn`` blocks, so a bundle's entry flowchart that delegates to a
+sibling still gets that bundle's copy rather than a cwd shadow one level down.
+Flattening would leave the child cwd-shadowable at depth 1 -- the bundle path
+would sit in ``search_paths``, which ``resolve_command`` checks *after* cwd.
+
+That is not hypothetical.  A live bundle's ``soul-lite.json`` holds a spawn of
+``soul-lite-do`` with no ``search_path`` of its own, while a same-named
+``soul-lite-do.json`` sits in the engine's working directory.  The two are
+byte-identical until a mutation edits the bundle's copy -- at which point a
+flattened child would evaluate the *unmutated* production file and score it as
+if the edit had taken effect, silently.  Hence the deliberately differing
+contents below: identical fixtures would pass under either design and prove
+nothing.  ``test_priority_is_inherited_by_a_nested_spawn`` reproduces it.
+
+Per-spawn ``cwd`` is not an alternative fix: ``resolve_command`` reads
+``Path.cwd()`` (the engine process), ``_exec_spawn`` only hands ``cwd`` to
+``clone()``, and the engine calls ``os.chdir`` nowhere -- so it moves the child
+session without touching resolution at all.
 """
 
 from __future__ import annotations
@@ -24,6 +40,7 @@ from unittest.mock import MagicMock, patch
 import flowcoder_engine.walker as walker_mod
 from flowcoder_engine.walker import GraphWalker
 from flowcoder_flowchart import (
+    BashBlock,
     Command,
     CommandBlock,
     Connection,
@@ -62,6 +79,28 @@ def _nesting_flowchart(name: str, nested: str) -> Flowchart:
         connections=[
             Connection(source_id="cs", target_id="call"),
             Connection(source_id="call", target_id="ce"),
+        ],
+    )
+
+
+def _marking_flowchart(name: str, marker: Path) -> Flowchart:
+    """A flowchart whose one effect is appending ``name`` to ``marker``.
+
+    Asserting on a side effect rather than on which file got loaded is what
+    makes "the bundle's copy ran" a claim about execution.  The two copies in
+    the nested-spawn test differ only in what they write, mirroring a bundle
+    whose flowchart has been mutated away from the production original.
+    """
+    return Flowchart(
+        name=name,
+        blocks={
+            "cs": StartBlock(id="cs", name="ChildStart"),
+            "mark": BashBlock(id="mark", name="Mark", command=f"echo {name} >> {marker}"),
+            "ce": EndBlock(id="ce", name="ChildEnd"),
+        },
+        connections=[
+            Connection(source_id="cs", target_id="mark"),
+            Connection(source_id="mark", target_id="ce"),
         ],
     )
 
@@ -271,6 +310,64 @@ class TestSearchPathPrecedence:
             "bundle-orch",
             "from-bundle",
         ]
+
+    async def test_priority_is_inherited_by_a_nested_spawn(
+        self, tmp_path, monkeypatch
+    ):
+        # The live shape: the bundle's entry flowchart spawns a sibling without
+        # naming a search path itself, so depth 1 resolves purely on what the
+        # child inherited.  Flattening the bundle path into the child's
+        # search_paths puts it *behind* cwd there, and the decoy runs.
+        marker = tmp_path / "which-ran.txt"
+        cwd = tmp_path / "cwd"
+        _write_command(
+            cwd / "commands", "entry", _marking_flowchart("DECOY-ENTRY", marker)
+        )
+        _write_command(
+            cwd / "commands", "nested", _marking_flowchart("DECOY-NESTED", marker)
+        )
+
+        bundle = tmp_path / "bundle"
+        # No search_path on the inner spawn -- exactly like the real spawn_do.
+        _write_command(bundle, "entry", _spawning("nested"))
+        _write_command(bundle, "nested", _marking_flowchart("BUNDLE-NESTED", marker))
+        monkeypatch.chdir(cwd)
+
+        fc = _spawning("entry", search_path=str(bundle))
+        walker = GraphWalker(fc, MockSession(), {}, MockProtocol())
+
+        result = await walker.run()
+
+        assert result.status == "completed", result
+        # What actually executed, two levels down -- the bundle's copy, not the
+        # byte-for-byte decoy sitting in the process working directory.
+        assert marker.read_text().split() == ["BUNDLE-NESTED"]
+
+    async def test_a_nested_spawn_can_override_the_inherited_priority(
+        self, tmp_path, monkeypatch
+    ):
+        # Inheriting a priority must not freeze it: a nested spawn that names
+        # its own search_path prepends, so the innermost wins.
+        marker = tmp_path / "which-ran.txt"
+        cwd = tmp_path / "cwd"
+        _write_command(
+            cwd / "commands", "nested", _marking_flowchart("DECOY-NESTED", marker)
+        )
+
+        inner = tmp_path / "inner"
+        _write_command(inner, "nested", _marking_flowchart("INNER-NESTED", marker))
+        outer = tmp_path / "outer"
+        _write_command(outer, "entry", _spawning("nested", search_path=str(inner)))
+        _write_command(outer, "nested", _marking_flowchart("OUTER-NESTED", marker))
+        monkeypatch.chdir(cwd)
+
+        fc = _spawning("entry", search_path=str(outer))
+        walker = GraphWalker(fc, MockSession(), {}, MockProtocol())
+
+        result = await walker.run()
+
+        assert result.status == "completed", result
+        assert marker.read_text().split() == ["INNER-NESTED"]
 
     async def test_without_a_search_path_cwd_still_wins(self, tmp_path, monkeypatch):
         # The invariant: absent search_path, precedence is exactly what it was,
