@@ -190,6 +190,7 @@ class GraphWalker:
         max_depth: int = MAX_RECURSION_DEPTH,
         search_paths: list[str | Path] | None = None,
         session_factory: SessionFactory | None = None,
+        priority_paths: list[str | Path] | None = None,
     ) -> None:
         self._flowchart = flowchart
         self._session = session
@@ -202,6 +203,11 @@ class GraphWalker:
         self._call_stack = call_stack or []
         self._max_depth = max_depth
         self._search_paths = search_paths or []
+        # Paths that outrank cwd when resolving a command name (see
+        # resolve_command).  Set by a spawn block's search_path and inherited by
+        # the child, so a bundle's orchestrator delegating to a sibling
+        # sub-command still gets that bundle's copy rather than a cwd shadow.
+        self._priority_paths = priority_paths or []
         self._session_factory = session_factory
         self._spawned_sessions: dict[str, BaseSession] = {}
         self._spawned_tasks: dict[str, asyncio.Task[ExecutionResult]] = {}
@@ -540,7 +546,11 @@ class GraphWalker:
 
             # Resolve the command
             try:
-                cmd = resolve_command(command_name, search_paths=self._search_paths)
+                cmd = resolve_command(
+                    command_name,
+                    search_paths=self._search_paths,
+                    priority_paths=self._priority_paths,
+                )
             except CommandNotFoundError as e:
                 span.set_status(trace.StatusCode.ERROR, str(e))
                 return BlockResult.fail(str(e))
@@ -575,6 +585,7 @@ class GraphWalker:
                 max_depth=self._max_depth,
                 search_paths=self._search_paths,
                 session_factory=self._session_factory,
+                priority_paths=self._priority_paths,
             )
 
             child_result = await child_walker.run()
@@ -620,8 +631,24 @@ class GraphWalker:
             else block.model
         )
 
+        # Optional per-spawn search path: template it (so it can use {{var}}/$N)
+        # and put it ahead of everything else this spawn resolves -- ahead of
+        # the inherited search paths, which may already hold a same-named
+        # flowchart, and ahead of cwd, which resolve_command checks first.  It
+        # is prepended rather than appended so a nested spawn's path outranks
+        # the one it inherited.  Unset -> the parent's priority paths verbatim.
+        priority_paths: list[str | Path] = list(self._priority_paths)
+        if block.search_path:
+            priority_paths.insert(
+                0, evaluate_template(block.search_path, self._variables)
+            )
+
         try:
-            cmd = resolve_command(command_name, search_paths=self._search_paths)
+            cmd = resolve_command(
+                command_name,
+                search_paths=self._search_paths,
+                priority_paths=priority_paths,
+            )
         except CommandNotFoundError as e:
             return BlockResult.fail(str(e))
 
@@ -689,6 +716,7 @@ class GraphWalker:
             max_depth=self._max_depth,
             search_paths=self._search_paths,
             session_factory=self._session_factory,
+            priority_paths=priority_paths,
         )
 
         task = asyncio.create_task(child_walker.run())

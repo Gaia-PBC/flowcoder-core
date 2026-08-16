@@ -128,6 +128,13 @@ A command `name` (written `/name` in a proxied message, and either way on the
 
 First match wins; `CommandNotFoundError` if none.
 
+A `spawn` block may set `search_path` to aim one spawn at a specific flowchart —
+a bundle's own, say, which the parent's search paths need not cover. That path
+is searched *before* step 1, so a same-named file under the working directory or
+in a `--search-path` cannot silently capture the spawn. The spawned child
+inherits it at the same precedence, so its own `command` blocks resolve there
+too. Templates (`{{var}}`, `$1`) are substituted first.
+
 ## Flowchart format
 
 A command is a JSON document of blocks and the connections between them.

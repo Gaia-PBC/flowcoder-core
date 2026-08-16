@@ -135,6 +135,12 @@ class SpawnBlock(BlockBase):
     model: str | None = None
     backend: str | None = None
     cwd: str | None = None
+    # Where to resolve command_name from, ahead of everything else.  Lets one
+    # spawn reach a flowchart the parent's own search paths do not cover -- an
+    # optimizer running an arbitrary bundle's flowchart, say.  It outranks the
+    # current directory as well as the inherited search paths, because either
+    # can hold a same-named file and would otherwise win silently.
+    search_path: str | None = None
 
 
 class WaitBlock(BlockBase):
