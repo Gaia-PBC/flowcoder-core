@@ -243,7 +243,8 @@ class GraphWalker:
 
                     self._blocks_executed += 1
                     self._protocol.emit_block_start(
-                        current.id, current.name, current.type
+                        current.id, current.name, current.type,
+                        session=self._session.name,
                     )
                     self._protocol.log(
                         f"Executing block \"{current.name}\" "
@@ -274,6 +275,7 @@ class GraphWalker:
                         current.name,
                         result.success,
                         session_id=self._session.session_id,
+                        session=self._session.name,
                     )
 
                     if result.exit_code is not None:
@@ -394,6 +396,7 @@ class GraphWalker:
                     block.type,
                     elapsed_ms,
                     block.timeout_seconds,
+                    session=self._session.name,
                 )
                 return BlockResult.fail(
                     f"Block timed out after {elapsed_ms}ms "
@@ -695,6 +698,16 @@ class GraphWalker:
         self._spawned_tasks[agent_name] = task
         self._spawned_sessions[agent_name] = child_session
 
+        self._protocol.emit_spawn_start(
+            agent_name=agent_name,
+            command_name=command_name,
+            model=resolved_model or "",
+            backend=block.backend or "",
+            cwd=spawn_cwd or "",
+            parent_session=self._session.name,
+            session=self._session.name,
+        )
+
         return BlockResult.ok(output=f"Spawned agent '{agent_name}'")
 
     async def _exec_wait(self, block: WaitBlock) -> BlockResult:
@@ -737,14 +750,31 @@ class GraphWalker:
                     f"Agent '{agent_name}' timed out after {block.timeout_seconds}s"
                 )
                 task.cancel()
+                self._protocol.emit_spawn_complete(
+                    agent_name=agent_name, status="failed",
+                    result=f"timed out after {block.timeout_seconds}s",
+                    session=self._session.name,
+                )
                 continue
             except Exception as e:
                 errors.append(f"Agent '{agent_name}' failed: {e}")
+                self._protocol.emit_spawn_complete(
+                    agent_name=agent_name, status="failed", result=str(e),
+                    session=self._session.name,
+                )
                 continue
 
             self._spawned_results[agent_name] = exec_result
             self._protocol.log(
                 f"Agent '{agent_name}' completed: {exec_result.status}"
+            )
+            self._protocol.emit_spawn_complete(
+                agent_name=agent_name,
+                status="completed" if exec_result.status == "completed" else "failed",
+                duration_ms=exec_result.duration_ms,
+                cost_usd=exec_result.cost_usd,
+                result=json.dumps(exec_result.variables, default=str)[:2000],
+                session=self._session.name,
             )
 
             # Roll this child's cumulative cost up into the parent session's
@@ -839,6 +869,7 @@ class GraphWalker:
                         block.type,
                         elapsed_ms,
                         block.timeout_seconds,
+                        session=self._session.name,
                     )
                     return BlockResult.fail(
                         f"Input block '{block.name}': no input received "
@@ -869,7 +900,8 @@ class GraphWalker:
             # a failed block instead of letting the flowchart hang forever.
             elapsed_ms = int((time.monotonic() - start) * 1000)
             self._protocol.emit_block_timeout(
-                block.id, block.name, block.type, elapsed_ms, block.timeout_seconds
+                block.id, block.name, block.type, elapsed_ms, block.timeout_seconds,
+                session=self._session.name,
             )
             return BlockResult.fail(
                 f"Input block '{block.name}': agent stopped responding "
@@ -895,6 +927,10 @@ class GraphWalker:
                     await task
                 except (asyncio.CancelledError, Exception):
                     pass
+                self._protocol.emit_spawn_complete(
+                    agent_name=agent_name, status="cancelled",
+                    session=self._session.name,
+                )
         for agent_name, session in list(self._spawned_sessions.items()):
             if session is not self._session:
                 await session.stop()

@@ -126,11 +126,18 @@ class ProtocolHandler:
             msg["data"] = data
         self.emit(msg)
 
-    def emit_block_start(self, block_id: str, block_name: str, block_type: str) -> None:
+    def emit_block_start(
+        self, block_id: str, block_name: str, block_type: str, session: str = ""
+    ) -> None:
         """Emit block_start system message."""
         self.emit_system(
             "block_start",
-            {"block_id": block_id, "block_name": block_name, "block_type": block_type},
+            {
+                "block_id": block_id,
+                "block_name": block_name,
+                "block_type": block_type,
+                "session": session,
+            },
         )
 
     def emit_block_complete(
@@ -139,17 +146,20 @@ class ProtocolHandler:
         block_name: str,
         success: bool,
         session_id: str | None = None,
+        session: str = "",
     ) -> None:
         """Emit block_complete system message.
 
         ``session_id`` is included in the data payload only when non-null,
         so consumers can update their stored session_id without overwriting
-        with a None before the first prompt block has run.
+        with a None before the first prompt block has run.  ``session`` is
+        the emitting walker's session name (uniform event tagging).
         """
         data: dict[str, Any] = {
             "block_id": block_id,
             "block_name": block_name,
             "success": success,
+            "session": session,
         }
         if session_id is not None:
             data["session_id"] = session_id
@@ -162,6 +172,7 @@ class ProtocolHandler:
         block_type: str,
         elapsed_ms: int,
         timeout_seconds: int,
+        session: str = "",
     ) -> None:
         """Emit block_timeout system message when a block exceeds its limit."""
         self.emit_system(
@@ -172,16 +183,22 @@ class ProtocolHandler:
                 "block_type": block_type,
                 "elapsed_ms": elapsed_ms,
                 "timeout_seconds": timeout_seconds,
+                "session": session,
             },
         )
 
     def emit_flowchart_start(
-        self, command: str, args: str, block_count: int
+        self, command: str, args: str, block_count: int, session: str = ""
     ) -> None:
         """Emit flowchart_start when entering takeover mode."""
         self.emit_system(
             "flowchart_start",
-            {"command": command, "args": args, "block_count": block_count},
+            {
+                "command": command,
+                "args": args,
+                "block_count": block_count,
+                "session": session,
+            },
         )
 
     def emit_flowchart_complete(
@@ -191,6 +208,7 @@ class ProtocolHandler:
         cost_usd: float = 0.0,
         blocks_executed: int = 0,
         session_id: str = "",
+        session: str = "",
     ) -> None:
         """Emit flowchart_complete when leaving takeover mode."""
         self.emit_system(
@@ -201,6 +219,55 @@ class ProtocolHandler:
                 "cost_usd": cost_usd,
                 "blocks_executed": blocks_executed,
                 "session_id": session_id,
+                "session": session,
+            },
+        )
+
+    def emit_spawn_start(
+        self,
+        *,
+        agent_name: str,
+        command_name: str = "",
+        model: str = "",
+        backend: str = "",
+        cwd: str = "",
+        parent_session: str = "main",
+        session: str = "",
+    ) -> None:
+        """Emit spawn_start when a spawn block creates a child agent."""
+        self.emit_system(
+            "spawn_start",
+            {
+                "agent_name": agent_name,
+                "command_name": command_name,
+                "model": model,
+                "backend": backend,
+                "cwd": cwd,
+                "parent_session": parent_session,
+                "session": session,
+            },
+        )
+
+    def emit_spawn_complete(
+        self,
+        *,
+        agent_name: str,
+        status: str,
+        duration_ms: int = 0,
+        cost_usd: float = 0.0,
+        result: str = "",
+        session: str = "",
+    ) -> None:
+        """Emit spawn_complete when a spawned agent finishes."""
+        self.emit_system(
+            "spawn_complete",
+            {
+                "agent_name": agent_name,
+                "status": status,
+                "duration_ms": duration_ms,
+                "cost_usd": cost_usd,
+                "result": result,
+                "session": session,
             },
         )
 

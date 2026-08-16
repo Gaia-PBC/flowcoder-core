@@ -109,6 +109,7 @@ class TestEmit:
             "block_type": "prompt",
             "elapsed_ms": 1234,
             "timeout_seconds": 1,
+            "session": "",
         }
 
     def test_emit_block_complete_with_session_id(self):
@@ -134,8 +135,135 @@ class TestEmit:
             "block_id": "b1",
             "block_name": "Slow",
             "success": True,
+            "session": "",
         }
         assert "session_id" not in msg["data"]
+
+
+class TestSessionTagging:
+    """Lifecycle events carry the emitting walker's session name."""
+
+    def test_block_start_payload_includes_session(self):
+        p = ProtocolHandler()
+        captured = io.StringIO()
+        with patch.object(sys, "stdout", captured):
+            p.emit_block_start("b1", "Prompt", "prompt", session="lint")
+        msg = json.loads(captured.getvalue().strip())
+        assert msg["subtype"] == "block_start"
+        assert msg["data"]["session"] == "lint"
+
+    def test_block_complete_payload_includes_session(self):
+        p = ProtocolHandler()
+        captured = io.StringIO()
+        with patch.object(sys, "stdout", captured):
+            p.emit_block_complete("b1", "Prompt", True, session="lint")
+        msg = json.loads(captured.getvalue().strip())
+        assert msg["subtype"] == "block_complete"
+        assert msg["data"]["session"] == "lint"
+
+    def test_block_timeout_payload_includes_session(self):
+        p = ProtocolHandler()
+        captured = io.StringIO()
+        with patch.object(sys, "stdout", captured):
+            p.emit_block_timeout("b1", "Slow", "prompt", 1234, 1, session="lint")
+        msg = json.loads(captured.getvalue().strip())
+        assert msg["subtype"] == "block_timeout"
+        assert msg["data"]["session"] == "lint"
+
+    def test_flowchart_start_payload_includes_session(self):
+        p = ProtocolHandler()
+        captured = io.StringIO()
+        with patch.object(sys, "stdout", captured):
+            p.emit_flowchart_start("story", "dragons", 5, session="main")
+        msg = json.loads(captured.getvalue().strip())
+        assert msg["subtype"] == "flowchart_start"
+        assert msg["data"]["session"] == "main"
+
+    def test_flowchart_complete_payload_includes_session(self):
+        p = ProtocolHandler()
+        captured = io.StringIO()
+        with patch.object(sys, "stdout", captured):
+            p.emit_flowchart_complete("completed", session="main")
+        msg = json.loads(captured.getvalue().strip())
+        assert msg["subtype"] == "flowchart_complete"
+        assert msg["data"]["session"] == "main"
+
+    def test_block_start_session_defaults_to_empty(self):
+        p = ProtocolHandler()
+        captured = io.StringIO()
+        with patch.object(sys, "stdout", captured):
+            p.emit_block_start("b1", "Prompt", "prompt")
+        msg = json.loads(captured.getvalue().strip())
+        assert msg["data"]["session"] == ""
+
+
+class TestSpawnEvents:
+    def test_spawn_start_payload(self):
+        p = ProtocolHandler()
+        captured = io.StringIO()
+        with patch.object(sys, "stdout", captured):
+            p.emit_spawn_start(
+                agent_name="lint",
+                command_name="lint-fix",
+                model="opus",
+                backend="claude",
+                cwd="/tmp",
+                parent_session="main",
+                session="main",
+            )
+        msg = json.loads(captured.getvalue().strip())
+        assert msg["type"] == "system"
+        assert msg["subtype"] == "spawn_start"
+        assert msg["data"]["agent_name"] == "lint"
+        assert msg["data"]["command_name"] == "lint-fix"
+        assert msg["data"]["model"] == "opus"
+        assert msg["data"]["backend"] == "claude"
+        assert msg["data"]["cwd"] == "/tmp"
+        assert msg["data"]["parent_session"] == "main"
+        assert msg["data"]["session"] == "main", "emitting (parent) session"
+
+    def test_spawn_start_defaults(self):
+        p = ProtocolHandler()
+        captured = io.StringIO()
+        with patch.object(sys, "stdout", captured):
+            p.emit_spawn_start(agent_name="lint")
+        msg = json.loads(captured.getvalue().strip())
+        assert msg["data"]["command_name"] == ""
+        assert msg["data"]["parent_session"] == "main"
+        assert msg["data"]["session"] == ""
+
+    def test_spawn_complete_payload(self):
+        p = ProtocolHandler()
+        captured = io.StringIO()
+        with patch.object(sys, "stdout", captured):
+            p.emit_spawn_complete(
+                agent_name="lint",
+                status="completed",
+                duration_ms=1234,
+                cost_usd=0.042,
+                result="{}",
+                session="main",
+            )
+        msg = json.loads(captured.getvalue().strip())
+        assert msg["type"] == "system"
+        assert msg["subtype"] == "spawn_complete"
+        assert msg["data"]["agent_name"] == "lint"
+        assert msg["data"]["status"] == "completed"
+        assert msg["data"]["duration_ms"] == 1234
+        assert msg["data"]["cost_usd"] == 0.042
+        assert msg["data"]["result"] == "{}"
+        assert msg["data"]["session"] == "main"
+
+    def test_spawn_complete_defaults(self):
+        p = ProtocolHandler()
+        captured = io.StringIO()
+        with patch.object(sys, "stdout", captured):
+            p.emit_spawn_complete(agent_name="lint", status="cancelled")
+        msg = json.loads(captured.getvalue().strip())
+        assert msg["data"]["duration_ms"] == 0
+        assert msg["data"]["cost_usd"] == 0.0
+        assert msg["data"]["result"] == ""
+        assert msg["data"]["session"] == ""
 
 
 class TestInboxQueue:

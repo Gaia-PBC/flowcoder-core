@@ -116,11 +116,18 @@ class MockProtocol:
             msg["data"] = data
         self.messages.append(msg)
 
-    def emit_block_start(self, block_id: str, block_name: str, block_type: str) -> None:
+    def emit_block_start(
+        self, block_id: str, block_name: str, block_type: str, session: str = ""
+    ) -> None:
         self.messages.append({
             "type": "system",
             "subtype": "block_start",
-            "data": {"block_id": block_id, "block_name": block_name, "block_type": block_type},
+            "data": {
+                "block_id": block_id,
+                "block_name": block_name,
+                "block_type": block_type,
+                "session": session,
+            },
         })
 
     def emit_block_complete(
@@ -129,11 +136,13 @@ class MockProtocol:
         block_name: str,
         success: bool,
         session_id: str | None = None,
+        session: str = "",
     ) -> None:
         data: dict = {
             "block_id": block_id,
             "block_name": block_name,
             "success": success,
+            "session": session,
         }
         if session_id is not None:
             data["session_id"] = session_id
@@ -150,6 +159,7 @@ class MockProtocol:
         block_type: str,
         elapsed_ms: int,
         timeout_seconds: int,
+        session: str = "",
     ) -> None:
         self.messages.append({
             "type": "system",
@@ -160,6 +170,55 @@ class MockProtocol:
                 "block_type": block_type,
                 "elapsed_ms": elapsed_ms,
                 "timeout_seconds": timeout_seconds,
+                "session": session,
+            },
+        })
+
+    def emit_spawn_start(
+        self,
+        *,
+        agent_name: str,
+        command_name: str = "",
+        model: str = "",
+        backend: str = "",
+        cwd: str = "",
+        parent_session: str = "main",
+        session: str = "",
+    ) -> None:
+        self.messages.append({
+            "type": "system",
+            "subtype": "spawn_start",
+            "data": {
+                "agent_name": agent_name,
+                "command_name": command_name,
+                "model": model,
+                "backend": backend,
+                "cwd": cwd,
+                "parent_session": parent_session,
+                "session": session,
+            },
+        })
+
+    def emit_spawn_complete(
+        self,
+        *,
+        agent_name: str,
+        status: str,
+        duration_ms: int = 0,
+        cost_usd: float = 0.0,
+        result: str = "",
+        session: str = "",
+    ) -> None:
+        self.messages.append({
+            "type": "system",
+            "subtype": "spawn_complete",
+            "data": {
+                "agent_name": agent_name,
+                "status": status,
+                "duration_ms": duration_ms,
+                "cost_usd": cost_usd,
+                "result": result,
+                "session": session,
             },
         })
 
