@@ -108,6 +108,16 @@ def add_claude_args(parser: argparse.ArgumentParser) -> None:
         dest="allowed_tools",
         help="Comma-separated list of tools to allow",
     )
+    parser.add_argument(
+        "--json-schema",
+        dest="json_schema",
+        help=(
+            "JSON Schema for the flowchart's FINAL answer. Parsed here and "
+            "applied once, after the flowchart completes -- deliberately NOT "
+            "forwarded to the inner CLI, where it would constrain every turn "
+            "and override each block's own output_schema"
+        ),
+    )
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
