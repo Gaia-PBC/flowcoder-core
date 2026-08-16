@@ -6,15 +6,19 @@ is not — never skipped.  The repo's policy hook turns a skip into a failure on
 the grounds that a skipped test is evidence of nothing, and deselection is the
 sanctioned way out: deselected tests are never collected and produce no report.
 
-Set two environment variables to run them::
+The gate is ``ANTHROPIC_BASE_URL``, the same variable that points the `claude`
+CLI at the endpoint in the first place::
 
-    FLOWCODER_LOCAL_MODEL=my-served-model-name
-    ANTHROPIC_BASE_URL=http://localhost:8000
+    ANTHROPIC_BASE_URL=http://localhost:8000 uv run pytest .../local_model
 
-The second is not optional once the first is set.  Without it the `claude` CLI
-falls back to the real Anthropic API, and a testbench sweep meant to be free
-would quietly bill the account instead — so that combination is a hard error
-rather than a silent redirect.
+Gating on the endpoint rather than on a flag of our own means these tests cannot
+run against the billed API by construction — no endpoint, no tests — so there is
+no misconfiguration left to guard against.  The trade is that a base URL
+exported for some unrelated proxy also selects them; that is the intended
+reading, since whatever it points at is what a flowchart would talk to.
+
+``ANTHROPIC_MODEL`` names the served model if it is set.  When it is not, the
+CLI's own default applies and no --model flag is passed.
 """
 
 from __future__ import annotations
@@ -26,13 +30,9 @@ import pytest
 
 HERE = Path(__file__).resolve().parent
 
-LOCAL_MODEL_ENV = "FLOWCODER_LOCAL_MODEL"
 BASE_URL_ENV = "ANTHROPIC_BASE_URL"
+MODEL_ENV = "ANTHROPIC_MODEL"
 TIMEOUT_ENV = "FLOWCODER_LOCAL_MODEL_TIMEOUT"
-
-
-def local_model() -> str | None:
-    return os.environ.get(LOCAL_MODEL_ENV) or None
 
 
 def base_url() -> str | None:
@@ -45,13 +45,13 @@ def run_timeout() -> float:
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
-    """Drop this directory's tests when there is no local model to talk to.
+    """Drop this directory's tests when there is no local endpoint to talk to.
 
     Only items under this conftest's own directory are touched — the hook is
     handed every collected item in the session, including the stub-based tiers
     that must keep running.
     """
-    if local_model():
+    if base_url():
         return
 
     mine, theirs = [], []
@@ -66,15 +66,6 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
 
 
 @pytest.fixture(scope="session")
-def model_name() -> str:
-    """The served model name, with the misconfiguration guard applied once."""
-    name = local_model()
-    assert name, "collection should have deselected these tests"
-    if not base_url():
-        raise pytest.UsageError(
-            f"{LOCAL_MODEL_ENV}={name} is set but {BASE_URL_ENV} is not. "
-            "The claude CLI would fall back to the real Anthropic API and bill "
-            f"the account. Set {BASE_URL_ENV} to the local endpoint "
-            "(e.g. http://localhost:8000, with no trailing /v1)."
-        )
-    return name
+def model_name() -> str | None:
+    """The served model name, or None to let the CLI pick its default."""
+    return os.environ.get(MODEL_ENV) or None

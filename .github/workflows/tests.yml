@@ -30,7 +30,7 @@ jobs:
       # Two tiers are excluded, both by deselection rather than skipping (the
       # conftest policy hook treats a skip as a failure):
       #   -m "not slow"  — tests that drive the real CLI and cost tokens
-      #   local_model/   — deselects itself unless FLOWCODER_LOCAL_MODEL is set
+      #   local_model/   — deselects itself unless ANTHROPIC_BASE_URL is set
       - name: Run tests
         run: |
           uv run pytest \

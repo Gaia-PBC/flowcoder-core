@@ -252,7 +252,7 @@ Three tiers, by what they talk to:
 | Tier | Talks to | When it runs |
 |---|---|---|
 | default | `_stub_claude.py`, a zero-token stub | always |
-| `local_model/` | a locally served model | when `FLOWCODER_LOCAL_MODEL` is set |
+| `local_model/` | a locally served model | when `ANTHROPIC_BASE_URL` is set |
 | `-m slow` | the real `claude` CLI, costs tokens | when selected |
 
 The local-model tier asks whether a given model can actually drive a flowchart —
@@ -260,13 +260,15 @@ does `output_schema` come back as parseable JSON, does a branch follow the
 answer. Run it with:
 
 ```bash
-FLOWCODER_LOCAL_MODEL=my-local-model \
 ANTHROPIC_BASE_URL=http://localhost:8000 \
+ANTHROPIC_MODEL=my-local-model \
 uv run pytest packages/flowcoder-engine/tests/local_model
 ```
 
-Setting `FLOWCODER_LOCAL_MODEL` without `ANTHROPIC_BASE_URL` is a hard error
-rather than a silent fallback to the billed API.
+The gate is `ANTHROPIC_BASE_URL` — the same variable that points the CLI at the
+endpoint — so these tests cannot run against the billed API by construction.
+`ANTHROPIC_MODEL` is optional; without it the CLI's default model applies.
+`FLOWCODER_LOCAL_MODEL_TIMEOUT` bounds each run (default 300s).
 
 Note that the excluded tiers **deselect** rather than skip: `tests/conftest.py`
 turns a skipped test into a failure, on the grounds that a skip is evidence of

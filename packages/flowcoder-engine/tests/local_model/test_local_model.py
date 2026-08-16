@@ -12,13 +12,12 @@ to fail on a small local model:
 They go through the ``flowcoder`` CLI as a subprocess, so what is measured is
 the same path the Docker image runs, not an in-process approximation.
 
-Deselected unless FLOWCODER_LOCAL_MODEL is set — see conftest.py.
+Deselected unless ANTHROPIC_BASE_URL is set — see conftest.py.
 """
 
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import sys
 from pathlib import Path
@@ -52,23 +51,26 @@ def save(directory: Path, name: str, flowchart: Flowchart) -> None:
     )
 
 
-def run(commands: Path, model: str, name: str, *args: str) -> dict:
-    """Run one command against the local model; return its final variables."""
+def run(commands: Path, model: str | None, name: str, *args: str) -> dict:
+    """Run one command against the local endpoint; return its final variables.
+
+    The endpoint itself comes from ANTHROPIC_BASE_URL in the inherited
+    environment — the same wiring a Docker run uses.
+    """
+    command = [
+        sys.executable, "-m", "flowcoder_engine.runner",
+        "--search-path", str(commands),
+        "--cwd", str(commands.parent),
+        "--no-color",
+        "--json",
+    ]
+    if model:
+        command += ["--model", model]
     result = subprocess.run(
-        [
-            sys.executable, "-m", "flowcoder_engine.runner",
-            "--search-path", str(commands),
-            "--cwd", str(commands.parent),
-            "--model", model,
-            "--no-color",
-            "--json",
-            name,
-            *args,
-        ],
+        [*command, name, *args],
         capture_output=True,
         text=True,
         timeout=run_timeout(),
-        env={**os.environ, "ANTHROPIC_MODEL": model},
     )
     assert result.returncode == 0, (
         f"flowcoder exited {result.returncode}\n"

@@ -1,1 +1,1 @@
-"""Local-model test tier (deselected unless FLOWCODER_LOCAL_MODEL is set)."""
+"""Local-model test tier (deselected unless ANTHROPIC_BASE_URL is set)."""
