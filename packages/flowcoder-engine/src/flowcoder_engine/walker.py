@@ -253,7 +253,8 @@ class GraphWalker:
 
                     self._blocks_executed += 1
                     self._protocol.emit_block_start(
-                        current.id, current.name, current.type
+                        current.id, current.name, current.type,
+                        session=self._session.name,
                     )
                     self._protocol.log(
                         f"Executing block \"{current.name}\" "
@@ -284,6 +285,7 @@ class GraphWalker:
                         current.name,
                         result.success,
                         session_id=self._session.session_id,
+                        session=self._session.name,
                     )
 
                     if result.exit_code is not None:
@@ -404,6 +406,7 @@ class GraphWalker:
                     block.type,
                     elapsed_ms,
                     block.timeout_seconds,
+                    session=self._session.name,
                 )
                 return BlockResult.fail(
                     f"Block timed out after {elapsed_ms}ms "
@@ -727,6 +730,16 @@ class GraphWalker:
         self._spawned_tasks[agent_name] = task
         self._spawned_sessions[agent_name] = child_session
 
+        self._protocol.emit_spawn_start(
+            agent_name=agent_name,
+            command_name=command_name,
+            model=resolved_model or "",
+            backend=block.backend or "",
+            cwd=spawn_cwd or "",
+            parent_session=self._session.name,
+            session=self._session.name,
+        )
+
         return BlockResult.ok(output=f"Spawned agent '{agent_name}'")
 
     async def _exec_wait(self, block: WaitBlock) -> BlockResult:
@@ -769,14 +782,37 @@ class GraphWalker:
                     f"Agent '{agent_name}' timed out after {block.timeout_seconds}s"
                 )
                 task.cancel()
+                self._protocol.emit_spawn_complete(
+                    agent_name=agent_name, status="failed",
+                    result=f"timed out after {block.timeout_seconds}s",
+                    session=self._session.name,
+                )
+                # The terminal spawn_complete was emitted here; drop the task so
+                # _cleanup_spawned cannot emit a second ('cancelled') event. The
+                # child session stays registered so cleanup still stops it.
+                self._spawned_tasks.pop(agent_name, None)
                 continue
             except Exception as e:
                 errors.append(f"Agent '{agent_name}' failed: {e}")
+                self._protocol.emit_spawn_complete(
+                    agent_name=agent_name, status="failed", result=str(e),
+                    session=self._session.name,
+                )
+                # Same as the timeout branch: already reported terminally.
+                self._spawned_tasks.pop(agent_name, None)
                 continue
 
             self._spawned_results[agent_name] = exec_result
             self._protocol.log(
                 f"Agent '{agent_name}' completed: {exec_result.status}"
+            )
+            self._protocol.emit_spawn_complete(
+                agent_name=agent_name,
+                status="completed" if exec_result.status == "completed" else "failed",
+                duration_ms=exec_result.duration_ms,
+                cost_usd=exec_result.cost_usd,
+                result=json.dumps(exec_result.variables, default=str)[:2000],
+                session=self._session.name,
             )
 
             # Roll this child's cumulative cost up into the parent session's
@@ -871,6 +907,7 @@ class GraphWalker:
                         block.type,
                         elapsed_ms,
                         block.timeout_seconds,
+                        session=self._session.name,
                     )
                     return BlockResult.fail(
                         f"Input block '{block.name}': no input received "
@@ -919,7 +956,8 @@ class GraphWalker:
             # a failed block instead of letting the flowchart hang forever.
             elapsed_ms = int((time.monotonic() - start) * 1000)
             self._protocol.emit_block_timeout(
-                block.id, block.name, block.type, elapsed_ms, block.timeout_seconds
+                block.id, block.name, block.type, elapsed_ms, block.timeout_seconds,
+                session=self._session.name,
             )
             return BlockResult.fail(
                 f"Input block '{block.name}': agent stopped responding "
@@ -937,7 +975,15 @@ class GraphWalker:
         return BlockResult.ok(output=result.response_text)
 
     async def _cleanup_spawned(self) -> None:
-        """Cancel and clean up any remaining spawned tasks and sessions."""
+        """Cancel and clean up any remaining spawned tasks and sessions.
+
+        Every task still registered here has no terminal ``spawn_complete`` yet
+        (``_exec_wait`` pops tasks once it reports them), so each one gets
+        exactly one: 'cancelled' for still-running tasks, or a real terminal
+        report for tasks that already finished while never awaited (a flowchart
+        that spawns then continues without a covering wait).  Popping here keeps
+        the loop safe for re-entry.
+        """
         for agent_name, task in list(self._spawned_tasks.items()):
             if not task.done():
                 task.cancel()
@@ -945,6 +991,40 @@ class GraphWalker:
                     await task
                 except (asyncio.CancelledError, Exception):
                     pass
+                self._protocol.emit_spawn_complete(
+                    agent_name=agent_name, status="cancelled",
+                    session=self._session.name,
+                )
+            else:
+                # Done but unreported (e.g. a never-awaited child that finished
+                # while the parent ran on): report its real outcome once, from
+                # the ExecutionResult if it survived, else 'cancelled'.
+                status = "cancelled"
+                duration_ms = 0
+                cost_usd = 0.0
+                result_text = ""
+                try:
+                    exec_result = task.result()
+                except (asyncio.CancelledError, Exception):
+                    pass
+                else:
+                    status = (
+                        "completed" if exec_result.status == "completed" else "failed"
+                    )
+                    duration_ms = exec_result.duration_ms
+                    cost_usd = exec_result.cost_usd
+                    result_text = json.dumps(
+                        exec_result.variables, default=str
+                    )[:2000]
+                self._protocol.emit_spawn_complete(
+                    agent_name=agent_name,
+                    status=status,
+                    duration_ms=duration_ms,
+                    cost_usd=cost_usd,
+                    result=result_text,
+                    session=self._session.name,
+                )
+            self._spawned_tasks.pop(agent_name, None)
         for agent_name, session in list(self._spawned_sessions.items()):
             if session is not self._session:
                 await session.stop()

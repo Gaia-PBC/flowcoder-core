@@ -98,8 +98,9 @@ class _MockProtocol:
         self.logs = []
 
     def emit(self, msg): self.messages.append(msg)
-    def emit_block_start(self, *a): pass
+    def emit_block_start(self, *a, **kw): pass
     def emit_block_complete(self, *a, **kw): pass
+    def emit_block_timeout(self, *a, **kw): pass
     def emit_result(self, *a, **kw): pass
     def emit_forwarded(self, *a, **kw): pass
     def emit_system(self, *a, **kw): pass
