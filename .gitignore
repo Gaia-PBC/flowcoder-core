@@ -1,9 +1,6 @@
 # Ignore everything by default
 *
 
-# But ignore __pycache__ everywhere
-__pycache__/
-
 # Allow specific files in commands/ (must un-ignore dir first, contents still ignored by *)
 !commands/
 !commands/ex0-design-doc.json
@@ -51,3 +48,8 @@ __pycache__/
 # Allow progress-reports/
 !progress-reports/
 !progress-reports/**
+
+# Ignore Python bytecode everywhere. Must stay last: the !dir/** rules above
+# would otherwise re-include it, since the last matching pattern wins.
+__pycache__/
+*.py[cod]
