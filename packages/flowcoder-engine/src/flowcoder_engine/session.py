@@ -94,6 +94,13 @@ def _clean_env(overrides: dict[str, str] | None = None) -> dict[str, str]:
 
     Optional `overrides` are applied last (e.g. ANTHROPIC_BASE_URL for
     routing through anthropic-proxy-rs).
+
+    An override whose value is the EMPTY STRING unsets the variable instead of
+    setting it blank. Overrides otherwise only ever add, so a child could be
+    routed TO a gateway but never back to native: a spawn pinned to an Anthropic
+    model under a parent routed at a local endpoint would inherit the parent's
+    ANTHROPIC_BASE_URL and be sent somewhere that does not serve it. Unsetting is
+    what makes a mixed-provider flowchart expressible.
     """
     from .cli import SDK_VERSION
 
@@ -101,8 +108,11 @@ def _clean_env(overrides: dict[str, str] | None = None) -> dict[str, str]:
     env.pop("CLAUDECODE", None)
     env["CLAUDE_CODE_ENTRYPOINT"] = "sdk-py"
     env["CLAUDE_AGENT_SDK_VERSION"] = SDK_VERSION
-    if overrides:
-        env.update(overrides)
+    for key, value in (overrides or {}).items():
+        if value == "":
+            env.pop(key, None)
+        else:
+            env[key] = value
     return env
 
 
