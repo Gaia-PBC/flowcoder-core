@@ -94,6 +94,13 @@ def _clean_env(overrides: dict[str, str] | None = None) -> dict[str, str]:
 
     Optional `overrides` are applied last (e.g. ANTHROPIC_BASE_URL for
     routing through anthropic-proxy-rs).
+
+    An override whose value is the EMPTY STRING unsets the variable instead of
+    setting it blank. Overrides otherwise only ever add, so a child could be
+    routed TO a gateway but never back to native: a spawn pinned to an Anthropic
+    model under a parent routed at a local endpoint would inherit the parent's
+    ANTHROPIC_BASE_URL and be sent somewhere that does not serve it. Unsetting is
+    what makes a mixed-provider flowchart expressible.
     """
     from .cli import SDK_VERSION
 
@@ -101,8 +108,11 @@ def _clean_env(overrides: dict[str, str] | None = None) -> dict[str, str]:
     env.pop("CLAUDECODE", None)
     env["CLAUDE_CODE_ENTRYPOINT"] = "sdk-py"
     env["CLAUDE_AGENT_SDK_VERSION"] = SDK_VERSION
-    if overrides:
-        env.update(overrides)
+    for key, value in (overrides or {}).items():
+        if value == "":
+            env.pop(key, None)
+        else:
+            env[key] = value
     return env
 
 
@@ -344,6 +354,25 @@ class ClaudeSession(BaseSession):
             protocol=self._protocol,
             control_callback=self._control_callback,
             env_overrides=self._env_overrides,
+            cwd=self._cwd,
+            read_timeout=self._read_timeout,
+        )
+
+    def with_env(self, env: dict[str, str]) -> ClaudeSession:
+        """Return a new ClaudeSession with env overrides merged in.
+
+        The child's overrides win over the parent's (e.g. a spawn block's
+        ANTHROPIC_BASE_URL/ANTHROPIC_MODEL routing a child to a different
+        provider than the parent engine).
+        """
+        merged = dict(self._env_overrides) if self._env_overrides else {}
+        merged.update(env)
+        return ClaudeSession(
+            name=self._name,
+            claude_cmd=list(self._claude_cmd),
+            protocol=self._protocol,
+            control_callback=self._control_callback,
+            env_overrides=merged,
             cwd=self._cwd,
             read_timeout=self._read_timeout,
         )

@@ -213,6 +213,27 @@ class TestSpawnBlock:
         assert b.cache_read_tokens_variable is None
         assert b.config_file is None
         assert b.cwd is None
+        assert b.env is None
+
+    def test_env_field(self):
+        b = SpawnBlock(
+            name="Spawn Worker",
+            agent_name="worker-1",
+            command_name="sub-flow",
+            env={"ANTHROPIC_BASE_URL": "http://localhost:8199", "ANTHROPIC_MODEL": "m1"},
+        )
+        assert b.env == {"ANTHROPIC_BASE_URL": "http://localhost:8199", "ANTHROPIC_MODEL": "m1"}
+
+    def test_env_deserialize(self):
+        b = BlockAdapter.validate_python({
+            "type": "spawn",
+            "name": "S",
+            "command_name": "sub",
+            "agent_name": "a1",
+            "env": {"ANTHROPIC_BASE_URL": "http://localhost:8199"},
+        })
+        assert isinstance(b, SpawnBlock)
+        assert b.env == {"ANTHROPIC_BASE_URL": "http://localhost:8199"}
 
     def test_defaults(self):
         b = SpawnBlock()

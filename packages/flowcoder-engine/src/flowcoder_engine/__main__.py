@@ -251,9 +251,13 @@ async def main() -> None:
     # Both "claude" and "codex" backends create ClaudeSession; codex routing
     # is handled by ANTHROPIC_BASE_URL/ANTHROPIC_MODEL env vars inherited
     # from the engine's environment.
-    def _make_claude_session(name: str, model: str | None) -> ClaudeSession:
+    def _make_claude_session(
+        name: str, model: str | None, env: dict[str, str] | None = None
+    ) -> ClaudeSession:
         cmd = [*claude_cmd, "--model", model] if model else list(claude_cmd)
-        return ClaudeSession(name=name, claude_cmd=cmd, protocol=protocol)
+        return ClaudeSession(
+            name=name, claude_cmd=cmd, protocol=protocol, env_overrides=env
+        )
 
     factory = SessionFactory()
     factory.register("claude", _make_claude_session)

@@ -681,11 +681,11 @@ class GraphWalker:
             os.makedirs(spawn_cwd, exist_ok=True)
 
         if block.backend and self._session_factory:
-            # NOTE: the backend path builds via SessionCreator(name, model),
+            # NOTE: the backend path builds via SessionCreator(name, model, env),
             # which has no cwd parameter, so block.cwd is not honored here yet.
             # Follow-up: thread cwd through SessionFactory.create / SessionCreator.
             child_session = self._session_factory.create(
-                block.backend, agent_name, resolved_model
+                block.backend, agent_name, resolved_model, block.env
             )
             if spawn_cwd is not None:
                 self._protocol.log(
@@ -697,10 +697,12 @@ class GraphWalker:
                 f"{f' model {resolved_model!r}' if resolved_model else ''} "
                 f"running command '{command_name}'"
             )
-        elif resolved_model:
-            child_session = self._session.with_model(resolved_model).clone(
+        elif resolved_model or block.env:
+            child_session = self._session.with_model(resolved_model or "").clone(
                 agent_name, cwd=spawn_cwd
             )
+            if block.env:
+                child_session = child_session.with_env(block.env)
             self._protocol.log(
                 f"Spawning agent '{agent_name}' with model '{resolved_model}' "
                 f"running command '{command_name}'"

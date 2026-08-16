@@ -9,6 +9,57 @@ from flowcoder_engine.session import ClaudeSession as Session, _clean_env, _stri
 from tests.conftest import MockProtocol
 
 
+class TestWithEnv:
+    def test_with_env_merges_overrides(self):
+        proto = MockProtocol()
+        original = Session(
+            name="main",
+            claude_cmd=["claude"],
+            protocol=proto,
+            env_overrides={"ANTHROPIC_BASE_URL": "http://parent"},
+        )
+        child = original.with_env({"ANTHROPIC_BASE_URL": "http://child", "ANTHROPIC_MODEL": "m1"})
+        assert child._env_overrides == {
+            "ANTHROPIC_BASE_URL": "http://child",
+            "ANTHROPIC_MODEL": "m1",
+        }
+        # Original untouched
+        assert original._env_overrides == {"ANTHROPIC_BASE_URL": "http://parent"}
+
+    def test_with_env_on_no_overrides(self):
+        original = Session(name="main", claude_cmd=["claude"])
+        child = original.with_env({"ANTHROPIC_MODEL": "m1"})
+        assert child._env_overrides == {"ANTHROPIC_MODEL": "m1"}
+
+    def test_clean_env_empty_override_unsets_the_variable(self):
+        """A child must be able to route BACK to native, not only to a gateway.
+
+        with_env can only ever set, so a spawn pinned to an Anthropic model
+        under a parent routed at a local endpoint would inherit the parent's
+        ANTHROPIC_BASE_URL and be sent somewhere that does not serve it. An
+        empty override value means unset."""
+        import os
+
+        os.environ["ANTHROPIC_BASE_URL"] = "http://parent-gateway"
+        try:
+            env = _clean_env({"ANTHROPIC_BASE_URL": ""})
+            assert "ANTHROPIC_BASE_URL" not in env
+        finally:
+            os.environ.pop("ANTHROPIC_BASE_URL", None)
+
+    def test_clean_env_empty_override_is_a_noop_when_var_absent(self):
+        import os
+
+        os.environ.pop("ANTHROPIC_MODEL", None)
+        env = _clean_env({"ANTHROPIC_MODEL": ""})
+        assert "ANTHROPIC_MODEL" not in env
+
+    def test_clean_env_applies_overrides(self):
+        env = _clean_env({"ANTHROPIC_BASE_URL": "http://x"})
+        assert env["ANTHROPIC_BASE_URL"] == "http://x"
+        assert env["CLAUDE_CODE_ENTRYPOINT"] == "sdk-py"
+
+
 class TestClone:
     def test_clone_preserves_config(self):
         proto = MockProtocol()

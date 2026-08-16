@@ -135,6 +135,10 @@ class SpawnBlock(BlockBase):
     model: str | None = None
     backend: str | None = None
     cwd: str | None = None
+    # Env overrides for the child session. An empty value UNSETS the variable,
+    # which is how a child routed at a gateway by its parent gets back to
+    # native -- see _clean_env.
+    env: dict[str, str] | None = None
     # Where to resolve command_name from, ahead of everything else.  Lets one
     # spawn reach a flowchart the parent's own search paths do not cover -- an
     # optimizer running an arbitrary bundle's flowchart, say.  It outranks the
