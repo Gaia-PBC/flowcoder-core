@@ -755,6 +755,10 @@ class GraphWalker:
                     result=f"timed out after {block.timeout_seconds}s",
                     session=self._session.name,
                 )
+                # The terminal spawn_complete was emitted here; drop the task so
+                # _cleanup_spawned cannot emit a second ('cancelled') event. The
+                # child session stays registered so cleanup still stops it.
+                self._spawned_tasks.pop(agent_name, None)
                 continue
             except Exception as e:
                 errors.append(f"Agent '{agent_name}' failed: {e}")
@@ -762,6 +766,8 @@ class GraphWalker:
                     agent_name=agent_name, status="failed", result=str(e),
                     session=self._session.name,
                 )
+                # Same as the timeout branch: already reported terminally.
+                self._spawned_tasks.pop(agent_name, None)
                 continue
 
             self._spawned_results[agent_name] = exec_result
@@ -919,7 +925,15 @@ class GraphWalker:
         return BlockResult.ok(output=result.response_text)
 
     async def _cleanup_spawned(self) -> None:
-        """Cancel and clean up any remaining spawned tasks and sessions."""
+        """Cancel and clean up any remaining spawned tasks and sessions.
+
+        Every task still registered here has no terminal ``spawn_complete`` yet
+        (``_exec_wait`` pops tasks once it reports them), so each one gets
+        exactly one: 'cancelled' for still-running tasks, or a real terminal
+        report for tasks that already finished while never awaited (a flowchart
+        that spawns then continues without a covering wait).  Popping here keeps
+        the loop safe for re-entry.
+        """
         for agent_name, task in list(self._spawned_tasks.items()):
             if not task.done():
                 task.cancel()
@@ -931,6 +945,36 @@ class GraphWalker:
                     agent_name=agent_name, status="cancelled",
                     session=self._session.name,
                 )
+            else:
+                # Done but unreported (e.g. a never-awaited child that finished
+                # while the parent ran on): report its real outcome once, from
+                # the ExecutionResult if it survived, else 'cancelled'.
+                status = "cancelled"
+                duration_ms = 0
+                cost_usd = 0.0
+                result_text = ""
+                try:
+                    exec_result = task.result()
+                except (asyncio.CancelledError, Exception):
+                    pass
+                else:
+                    status = (
+                        "completed" if exec_result.status == "completed" else "failed"
+                    )
+                    duration_ms = exec_result.duration_ms
+                    cost_usd = exec_result.cost_usd
+                    result_text = json.dumps(
+                        exec_result.variables, default=str
+                    )[:2000]
+                self._protocol.emit_spawn_complete(
+                    agent_name=agent_name,
+                    status=status,
+                    duration_ms=duration_ms,
+                    cost_usd=cost_usd,
+                    result=result_text,
+                    session=self._session.name,
+                )
+            self._spawned_tasks.pop(agent_name, None)
         for agent_name, session in list(self._spawned_sessions.items()):
             if session is not self._session:
                 await session.stop()

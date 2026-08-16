@@ -231,10 +231,15 @@ class ProtocolHandler:
         model: str = "",
         backend: str = "",
         cwd: str = "",
-        parent_session: str = "main",
+        parent_session: str = "",
         session: str = "",
     ) -> None:
-        """Emit spawn_start when a spawn block creates a child agent."""
+        """Emit spawn_start when a spawn block creates a child agent.
+
+        ``session`` is the emitting walker's session name and always equals
+        ``parent_session`` (the spawn's parent); both default to ``""`` so a
+        bare call does not claim a ``"main"`` parent it cannot support.
+        """
         self.emit_system(
             "spawn_start",
             {

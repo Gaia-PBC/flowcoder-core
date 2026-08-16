@@ -182,7 +182,7 @@ class MockProtocol:
         model: str = "",
         backend: str = "",
         cwd: str = "",
-        parent_session: str = "main",
+        parent_session: str = "",
         session: str = "",
     ) -> None:
         self.messages.append({

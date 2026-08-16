@@ -229,7 +229,9 @@ class TestSpawnEvents:
             p.emit_spawn_start(agent_name="lint")
         msg = json.loads(captured.getvalue().strip())
         assert msg["data"]["command_name"] == ""
-        assert msg["data"]["parent_session"] == "main"
+        # parent_session and session default together to "" (a bare call must
+        # not claim a "main" parent it cannot support).
+        assert msg["data"]["parent_session"] == ""
         assert msg["data"]["session"] == ""
 
     def test_spawn_complete_payload(self):

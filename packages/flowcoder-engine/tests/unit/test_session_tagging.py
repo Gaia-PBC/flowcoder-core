@@ -192,3 +192,153 @@ class TestSpawnLifecycleEvents:
         assert len(completes) == 1
         assert completes[0]["data"]["status"] == "failed"
         assert completes[0]["data"]["session"] == "mock"
+
+
+def _slow_child_flowchart() -> Flowchart:
+    """A start -> prompt -> end flowchart whose prompt sleeps (delay_seconds)."""
+    return Flowchart(
+        blocks={
+            "cs": StartBlock(id="cs", name="ChildStart"),
+            "cp": PromptBlock(id="cp", name="ChildPrompt", prompt="hi"),
+            "ce": EndBlock(id="ce", name="ChildEnd"),
+        },
+        connections=[
+            Connection(source_id="cs", target_id="cp"),
+            Connection(source_id="cp", target_id="ce"),
+        ],
+    )
+
+
+class TestSpawnCompleteExactlyOnce:
+    async def test_wait_timeout_emits_exactly_one_failed(self):
+        """A wait whose child times out emits exactly one 'failed' spawn_complete
+        (from the timeout branch) and no 'cancelled' from cleanup."""
+        fc = Flowchart(
+            blocks={
+                "s": StartBlock(id="s", name="Start"),
+                "sp": SpawnBlock(
+                    id="sp", name="Spawn", agent_name="worker", command_name="child-cmd"
+                ),
+                "w": WaitBlock(
+                    id="w", name="Wait", wait_for=["worker"], timeout_seconds=1
+                ),
+                "e": EndBlock(id="e", name="End"),
+            },
+            connections=[
+                Connection(source_id="s", target_id="sp"),
+                Connection(source_id="sp", target_id="w"),
+                Connection(source_id="w", target_id="e"),
+            ],
+        )
+        protocol = MockProtocol()
+        # Child prompt sleeps 60s; the wait times out at 1s.
+        walker = GraphWalker(fc, MockSession(delay_seconds=60), {}, protocol)
+
+        mock_cmd = MagicMock()
+        mock_cmd.flowchart = _slow_child_flowchart()
+        with patch("flowcoder_engine.walker.resolve_command", return_value=mock_cmd):
+            result = await walker.run()
+
+        assert result.status != "completed"
+        completes = _messages_of(protocol, "spawn_complete")
+        assert len(completes) == 1, (
+            "timeout branch must emit exactly one spawn_complete; "
+            f"cleanup must not double-emit (got {len(completes)})"
+        )
+        assert completes[0]["data"]["status"] == "failed"
+        assert completes[0]["data"]["result"] == "timed out after 1s"
+        assert completes[0]["data"]["session"] == "mock"
+        assert not _messages_of(protocol, "spawn_cancelled")  # no such subtype
+        assert all(
+            m["data"]["status"] != "cancelled" for m in protocol.messages
+            if m.get("subtype") == "spawn_complete"
+        )
+
+    async def test_spawn_with_no_wait_emits_exactly_one_cancelled(self):
+        """A spawned-but-never-awaited running child is cancelled at cleanup and
+        gets exactly one 'cancelled' spawn_complete."""
+        fc = Flowchart(
+            blocks={
+                "s": StartBlock(id="s", name="Start"),
+                "sp": SpawnBlock(
+                    id="sp", name="Spawn", agent_name="worker", command_name="child-cmd"
+                ),
+                "e": EndBlock(id="e", name="End"),
+            },
+            connections=[
+                Connection(source_id="s", target_id="sp"),
+                Connection(source_id="sp", target_id="e"),
+            ],
+        )
+        protocol = MockProtocol()
+        # Child prompt sleeps 60s, so it is still running when the parent ends.
+        walker = GraphWalker(fc, MockSession(delay_seconds=60), {}, protocol)
+
+        mock_cmd = MagicMock()
+        mock_cmd.flowchart = _slow_child_flowchart()
+        with patch("flowcoder_engine.walker.resolve_command", return_value=mock_cmd):
+            result = await walker.run()
+
+        assert result.status == "completed", result
+        starts = _messages_of(protocol, "spawn_start")
+        completes = _messages_of(protocol, "spawn_complete")
+        assert len(starts) == 1
+        assert len(completes) == 1, (
+            "cleanup must emit exactly one spawn_complete for the "
+            f"never-awaited child (got {len(completes)})"
+        )
+        assert completes[0]["data"]["status"] == "cancelled"
+        assert completes[0]["data"]["session"] == "mock"
+
+    async def test_never_awaited_done_child_emits_real_terminal_complete(self):
+        """A child that finishes while the parent continues (no covering wait)
+        must still get a terminal spawn_complete from cleanup — with its real
+        outcome, not a spurious 'cancelled'."""
+        class _FastChildSession(MockSession):
+            def clone(self, name: str, cwd: str | None = None) -> MockSession:
+                child = MockSession(
+                    responses=list(self._responses),
+                    delay_seconds=0.01,  # child finishes quickly
+                    session_id=self._session_id,
+                )
+                child._name = name
+                child._clone_cwd = cwd
+                return child
+
+        fc = Flowchart(
+            blocks={
+                "s": StartBlock(id="s", name="Start"),
+                "sp": SpawnBlock(
+                    id="sp", name="Spawn", agent_name="worker", command_name="child-cmd"
+                ),
+                # No wait block: the parent moves straight on; the child runs in
+                # the background and finishes before the parent ends.
+                "p": PromptBlock(id="p", name="ParentPrompt", prompt="hi"),
+                "e": EndBlock(id="e", name="End"),
+            },
+            connections=[
+                Connection(source_id="s", target_id="sp"),
+                Connection(source_id="sp", target_id="p"),
+                Connection(source_id="p", target_id="e"),
+            ],
+        )
+        protocol = MockProtocol()
+        # Parent prompt sleeps 0.2s — long enough for the 0.01s child to finish.
+        walker = GraphWalker(fc, _FastChildSession(delay_seconds=0.2), {}, protocol)
+
+        mock_cmd = MagicMock()
+        mock_cmd.flowchart = _slow_child_flowchart()
+        with patch("flowcoder_engine.walker.resolve_command", return_value=mock_cmd):
+            result = await walker.run()
+
+        assert result.status == "completed", result
+        completes = _messages_of(protocol, "spawn_complete")
+        assert len(completes) == 1, (
+            "cleanup must emit exactly one terminal spawn_complete for the "
+            f"done-but-unreported child (got {len(completes)})"
+        )
+        assert completes[0]["data"]["status"] == "completed"
+        assert completes[0]["data"]["agent_name"] == "worker"
+        assert completes[0]["data"]["session"] == "mock"
+        assert completes[0]["data"]["result"] == "{}"  # child variables, json-dumped
+        assert isinstance(completes[0]["data"]["duration_ms"], int)
