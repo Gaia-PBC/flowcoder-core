@@ -110,7 +110,7 @@ the full list. Commonly used:
 |---|---|
 | `--claude-path` | Path to the `claude` binary (auto-detected if omitted) |
 | `--search-path` | Extra directory to resolve flowchart commands from (repeatable) |
-| `--max-blocks` | Safety limit on blocks executed per flowchart |
+| `--max-blocks` | Safety limit on blocks executed per flowchart (default 1000; `0` or less runs unlimited) |
 | `--model` | Model for the inner Claude process (e.g. `sonnet`, `opus`, `haiku`) |
 | `--permission-mode` | `default`, `plan`, or `bypassPermissions` |
 | `--cwd` | Working directory for the inner Claude process |
@@ -127,6 +127,13 @@ A command `name` (written `/name` in a proxied message, and either way on the
 3. `~/.flowcoder/commands/name.json`
 
 First match wins; `CommandNotFoundError` if none.
+
+A `spawn` block may set `search_path` to aim one spawn at a specific flowchart —
+a bundle's own, say, which the parent's search paths need not cover. That path
+is searched *before* step 1, so a same-named file under the working directory or
+in a `--search-path` cannot silently capture the spawn. The spawned child
+inherits it at the same precedence, so its own `command` blocks resolve there
+too. Templates (`{{var}}`, `$1`) are substituted first.
 
 ## Flowchart format
 

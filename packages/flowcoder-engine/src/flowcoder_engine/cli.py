@@ -44,7 +44,10 @@ def add_engine_args(parser: argparse.ArgumentParser) -> None:
         "--max-blocks",
         type=int,
         default=1000,
-        help="Maximum number of blocks to execute per flowchart (safety limit)",
+        help=(
+            "Maximum number of blocks to execute per flowchart (safety limit); "
+            "0 or less disables it, for a deliberately unbounded flowchart"
+        ),
     )
 
 
