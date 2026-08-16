@@ -156,12 +156,20 @@ class _MessageRouter:
     and dispatches each message to either the control_response queue or
     the general message queue.  This ensures control_responses are never
     blocked behind unread user messages (or vice-versa).
+
+    Control responses are dispatched by request_id to per-request futures
+    (registered via ``wait_for_control_response``).  Unmatched responses
+    fall back to ``control_response_queue`` for proxy-mode draining.
+    Without per-request dispatch, concurrent spawned sessions sharing a
+    single callback each race on the queue, consume each other's
+    responses, discard them (wrong request_id), and deadlock.
     """
 
     def __init__(self, stdin_reader: _StdinReader) -> None:
         self._stdin = stdin_reader
         self.message_queue: asyncio.Queue[dict | None] = asyncio.Queue()
         self.control_response_queue: asyncio.Queue[dict | None] = asyncio.Queue()
+        self._pending_control: dict[str, asyncio.Future[dict | None]] = {}
         self._task: asyncio.Task[None] | None = None
 
     async def start(self) -> None:
@@ -175,9 +183,16 @@ class _MessageRouter:
                 # Signal EOF to both queues
                 await self.message_queue.put(None)
                 await self.control_response_queue.put(None)
+                for fut in self._pending_control.values():
+                    if not fut.done():
+                        fut.set_result(None)
                 return
             if msg.get("type") == "control_response":
-                await self.control_response_queue.put(msg)
+                req_id = msg.get("response", {}).get("request_id", "")
+                if req_id and req_id in self._pending_control:
+                    self._pending_control[req_id].set_result(msg)
+                else:
+                    await self.control_response_queue.put(msg)
             else:
                 await self.message_queue.put(msg)
 
@@ -188,6 +203,16 @@ class _MessageRouter:
     async def read_control_response(self) -> dict | None:
         """Read the next control_response."""
         return await self.control_response_queue.get()
+
+    async def wait_for_control_response(self, request_id: str) -> dict | None:
+        """Wait for a control_response matching a specific request_id."""
+        loop = asyncio.get_running_loop()
+        fut: asyncio.Future[dict | None] = loop.create_future()
+        self._pending_control[request_id] = fut
+        try:
+            return await fut
+        finally:
+            self._pending_control.pop(request_id, None)
 
 
 async def main() -> None:
@@ -633,35 +658,22 @@ async def _handle_control_request(
 ) -> dict:
     """Relay a control request from inner claude to the client.
 
-    Emits the request on stdout, waits for a control_response from the
-    router's control_response queue.
+    Emits the request on stdout, waits for the matching control_response
+    via per-request dispatch on the router.
     """
+    request_id = request.get("request_id", "")
     protocol.emit(request)
 
-    # Wait for the matching control_response from the client.
-    # Discard stale responses whose request_id doesn't match — they
-    # are left over from a previous interaction and would cause inner
-    # Claude to receive a mismatched response, silently deadlocking it.
-    request_id = request.get("request_id", "")
-    while True:
-        response = await router.read_control_response()
-        if response is None:
-            # Client disconnected — deny
-            return {
-                "type": "control_response",
-                "response": {
-                    "request_id": request_id,
-                    "allowed": False,
-                },
-            }
-        resp_id = response.get("response", {}).get("request_id", "")
-        if resp_id == request_id or not request_id:
-            return response
-        # Mismatched — discard and keep waiting
-        protocol.log(
-            f"Discarded stale control_response "
-            f"(got {resp_id!r}, expected {request_id!r})"
-        )
+    response = await router.wait_for_control_response(request_id)
+    if response is None:
+        return {
+            "type": "control_response",
+            "response": {
+                "request_id": request_id,
+                "allowed": False,
+            },
+        }
+    return response
 
 
 def main_sync() -> None:
