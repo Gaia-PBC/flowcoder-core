@@ -1,0 +1,76 @@
+name: tests
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  test:
+    name: pytest (stub tier)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      # --frozen fails on a stale uv.lock instead of quietly resolving
+      # something the lockfile never described.
+      - name: Sync dependencies
+        run: uv sync --frozen --extra dev
+
+      # No `claude` binary is installed here on purpose.  The suite that runs in
+      # CI drives tests/integration/_stub_claude.py, so it must not depend on
+      # the real CLI being present — if something starts reaching for it, this
+      # job is where that shows up.
+      #
+      # Two tiers are excluded, both by deselection rather than skipping (the
+      # conftest policy hook treats a skip as a failure):
+      #   -m "not slow"  — tests that drive the real CLI and cost tokens
+      #   local_model/   — deselects itself unless FLOWCODER_LOCAL_MODEL is set
+      - name: Run tests
+        run: |
+          uv run pytest \
+            packages/flowcoder-engine/tests \
+            packages/flowcoder-flowchart/tests \
+            tests \
+            -m "not slow"
+
+  lint:
+    name: ruff
+    runs-on: ubuntu-latest
+    # Non-blocking on purpose.  master already carries ~25 findings that predate
+    # this workflow, so a blocking job would be red from its first run and get
+    # ignored.  Report them, fix them down, then drop this line.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Sync dependencies
+        run: uv sync --frozen --extra dev
+
+      - name: Lint
+        run: uv run ruff check packages tests
+
+  image:
+    name: docker build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Builds only — the runner has no GPU and no model to talk to, so this
+      # proves the image assembles and the CLI is on PATH inside it, nothing
+      # more.  The local-model tier runs where a model is actually served.
+      - name: Build runner image
+        run: docker build -t flowcoder:ci -f docker/Dockerfile .
+
+      - name: Check the entrypoint resolves
+        run: docker run --rm --entrypoint flowcoder flowcoder:ci --help

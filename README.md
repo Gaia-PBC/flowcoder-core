@@ -185,6 +185,60 @@ parse as numbers the comparison is numeric, otherwise it is a string compare.
 | `/ex3-improve-project <N>` | N rounds of designing and building a feature |
 | `/all-examples` | Run the four above in sequence |
 
+## Local models
+
+The engine needs no code change to target a locally served model. The `claude`
+CLI it proxies reads its endpoint from the environment, and the engine passes
+its own environment through:
+
+```bash
+ANTHROPIC_BASE_URL=http://localhost:8000 \
+ANTHROPIC_AUTH_TOKEN=local \
+ANTHROPIC_MODEL=my-local-model \
+uv run flowcoder --search-path ./commands mycommand "some text"
+```
+
+The one hard constraint is the wire format: `claude` speaks the Anthropic
+Messages API and nothing else, so the endpoint must serve `/v1/messages`. vLLM
+does. An OpenAI-only server needs a translating proxy in front.
+
+`ANTHROPIC_BASE_URL` takes no trailing `/v1` — the CLI appends `/v1/messages`
+itself.
+
+## Docker
+
+`docker/Dockerfile` builds a runner image: the `claude` CLI, the engine, and
+nothing task-specific. Flowchart JSON and the project being worked on arrive on
+mounts, so one image serves a whole sweep.
+
+```bash
+docker build -t flowcoder -f docker/Dockerfile .
+
+docker run --rm \
+  -e ANTHROPIC_BASE_URL=http://vllm:8000 \
+  -e ANTHROPIC_AUTH_TOKEN=local \
+  -e ANTHROPIC_MODEL=my-local-model \
+  -v ./my-flowcharts:/work/commands:ro \
+  -v ./workspace:/work/workspace \
+  flowcoder soul "build me a CSV parser"
+```
+
+The command name is the mounted file's stem — `soul.json` runs as `soul`.
+Output is `--json` by default, and the exit code is the flowchart's, so a
+harness can consume both directly.
+
+| Mount / variable | Purpose |
+|---|---|
+| `/work/commands` | Flowchart JSON. Overridable with `FLOWCODER_SEARCH_PATH`. |
+| `/work/workspace` | Where Claude does its work. Overridable with `FLOWCODER_CWD`. |
+| `FLOWCODER_JSON` | `0` for human-readable output instead of JSON. |
+| `CLAUDE_VERSION` | Build arg. Pin it for a sweep — a CLI upgrade partway makes runs incomparable. |
+
+The entrypoint logs the endpoint in use on stderr, so a run that silently fell
+back to the billed API is visible in the logs rather than on the invoice.
+
+`docker/compose.yaml` wires the same image to a vLLM service.
+
 ## Tests
 
 ```bash
@@ -193,8 +247,30 @@ uv run pytest packages/flowcoder-flowchart/tests     # data model tests
 uv run pytest tests -m "not slow"                    # cross-package tests
 ```
 
-`tests/` spans both packages. Tests marked `slow` drive a real `claude` CLI
-and cost tokens; deselect them with `-m "not slow"`.
+Three tiers, by what they talk to:
+
+| Tier | Talks to | When it runs |
+|---|---|---|
+| default | `_stub_claude.py`, a zero-token stub | always |
+| `local_model/` | a locally served model | when `FLOWCODER_LOCAL_MODEL` is set |
+| `-m slow` | the real `claude` CLI, costs tokens | when selected |
+
+The local-model tier asks whether a given model can actually drive a flowchart —
+does `output_schema` come back as parseable JSON, does a branch follow the
+answer. Run it with:
+
+```bash
+FLOWCODER_LOCAL_MODEL=my-local-model \
+ANTHROPIC_BASE_URL=http://localhost:8000 \
+uv run pytest packages/flowcoder-engine/tests/local_model
+```
+
+Setting `FLOWCODER_LOCAL_MODEL` without `ANTHROPIC_BASE_URL` is a hard error
+rather than a silent fallback to the billed API.
+
+Note that the excluded tiers **deselect** rather than skip: `tests/conftest.py`
+turns a skipped test into a failure, on the grounds that a skip is evidence of
+nothing.
 
 ## License
 

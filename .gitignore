@@ -40,6 +40,10 @@ __pycache__/
 !scripts/
 !scripts/**
 
+# Allow docker/
+!docker/
+!docker/**
+
 # Allow design_docs/
 !design_docs/
 !design_docs/**

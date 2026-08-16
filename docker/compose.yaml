@@ -1,0 +1,62 @@
+# A flowcoder run against a locally served model.
+#
+#   docker compose -f docker/compose.yaml run --rm flowcoder mycommand "some text"
+#
+# The engine needs no code change to target a local model: the `claude` CLI it
+# proxies reads ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN / ANTHROPIC_MODEL from
+# its environment, and the engine passes its own environment through to it.
+#
+# The one hard constraint is the wire format — `claude` speaks the Anthropic
+# Messages API and nothing else, so the endpoint must serve /v1/messages.  vLLM
+# does; an OpenAI-only server would need a translating proxy in front.
+
+services:
+  vllm:
+    image: vllm/vllm-openai:latest
+    command:
+      - --model=${VLLM_MODEL:-Qwen/Qwen2.5-Coder-32B-Instruct}
+      - --served-model-name=${MODEL_NAME:-local-model}
+      - --host=0.0.0.0
+      - --port=8000
+    ports:
+      - "8000:8000"
+    volumes:
+      # Model weights cache — keeps a testbench sweep from re-downloading.
+      - ${HF_CACHE:-~/.cache/huggingface}:/root/.cache/huggingface
+    environment:
+      HUGGING_FACE_HUB_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 60
+      start_period: 300s
+
+  flowcoder:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      args:
+        # Pin for a testbench sweep: a CLI upgrade partway makes runs
+        # incomparable.
+        CLAUDE_VERSION: ${CLAUDE_VERSION:-latest}
+    depends_on:
+      vllm:
+        condition: service_healthy
+    environment:
+      # No trailing /v1 — the CLI appends /v1/messages itself.  If requests come
+      # back 404, this is the first thing to check.
+      ANTHROPIC_BASE_URL: http://vllm:8000
+      # Local servers ignore the value but the CLI wants one present.
+      ANTHROPIC_AUTH_TOKEN: local
+      ANTHROPIC_MODEL: ${MODEL_NAME:-local-model}
+    volumes:
+      - ${COMMANDS_DIR:-../commands}:/work/commands:ro
+      - ${WORKSPACE_DIR:-./workspace}:/work/workspace
