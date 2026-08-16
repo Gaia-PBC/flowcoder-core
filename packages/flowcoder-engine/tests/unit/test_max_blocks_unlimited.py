@@ -81,7 +81,13 @@ class _HaltingProtocol(MockProtocol):
         self._limit = limit
         self.blocks_started = 0
 
-    def emit_block_start(self, block_id: str, block_name: str, block_type: str) -> None:
+    # Signature must track Protocol.emit_block_start exactly. It gained
+    # `session` with session tagging; this override kept the old three-arg
+    # shape and every run through it died on an unexpected kwarg, so the two
+    # unlimited-limit cases never exercised the limit at all.
+    def emit_block_start(
+        self, block_id: str, block_name: str, block_type: str, session: str = ""
+    ) -> None:
         self.blocks_started += 1
         if self.blocks_started >= self._limit:
             self._walker_box[0].halt()
